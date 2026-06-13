@@ -30,6 +30,14 @@ public:
   // Called from main thread
   void PushSamples(const s16* samples, std::size_t num_samples);
   void PushStreamingSamples(const s16* samples, std::size_t num_samples);
+
+  // Original bodies, callable directly by the Sunbright hooks (replace the --wrap __real_).
+  std::size_t Mix_Impl(s16* samples, std::size_t num_samples);
+  void PushSamples_Impl(const s16* samples, std::size_t num_samples);
+  void PushStreamingSamples_Impl(const s16* samples, std::size_t num_samples);
+  void SetDMAInputSampleRateDivisor_Impl(u32 rate_divisor);
+  void SetStreamInputSampleRateDivisor_Impl(u32 rate_divisor);
+  void SetStreamingVolume_Impl(u32 lvolume, u32 rvolume);
   void PushWiimoteSpeakerSamples(std::size_t wiimote_index, const s16* samples,
                                  std::size_t num_samples, u32 sample_rate_divisor);
   void PushSkylanderPortalSamples(const u8* samples, std::size_t num_samples);

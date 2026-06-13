@@ -16,6 +16,7 @@
 #include "Common/Logging/Log.h"
 #include "Common/SPSCQueue.h"
 #include "Common/ScopeGuard.h"
+#include "Common/SunbrightHooks.h"
 
 #include "Core/AchievementManager.h"
 #include "Core/CPUThreadConfigCallback.h"
@@ -255,8 +256,22 @@ void CoreTimingManager::ClearPendingEvents()
   m_event_queue.clear();
 }
 
+// Sunbright trace hook: memcard EXI completion tracer (runtime/coretiming_trace.cpp).
+// Default null = original behavior.
 void CoreTimingManager::ScheduleEvent(s64 cycles_into_future, EventType* event_type, u64 userdata,
                                       FromThread from)
+{
+  if (sb_slot_ct_schedule_event)
+  {
+    sb_slot_ct_schedule_event(this, cycles_into_future, event_type, userdata,
+                              static_cast<int>(from));
+    return;
+  }
+  ScheduleEvent_Impl(cycles_into_future, event_type, userdata, from);
+}
+
+void CoreTimingManager::ScheduleEvent_Impl(s64 cycles_into_future, EventType* event_type,
+                                           u64 userdata, FromThread from)
 {
   ASSERT_MSG(POWERPC, event_type, "Event type is nullptr, will crash now.");
 
@@ -299,7 +314,18 @@ void CoreTimingManager::ScheduleEvent(s64 cycles_into_future, EventType* event_t
   }
 }
 
+// Sunbright trace hook (coretiming_trace.cpp). Default null = original behavior.
 void CoreTimingManager::RemoveEvent(EventType* event_type)
+{
+  if (sb_slot_ct_remove_event)
+  {
+    sb_slot_ct_remove_event(this, event_type);
+    return;
+  }
+  RemoveEvent_Impl(event_type);
+}
+
+void CoreTimingManager::RemoveEvent_Impl(EventType* event_type)
 {
   const size_t erased =
       std::erase_if(m_event_queue, [&](const Event& e) { return e.type == event_type; });
@@ -652,3 +678,21 @@ void GlobalIdle()
 }
 
 }  // namespace CoreTiming
+
+// ── Sunbright hook plumbing (replaces linker --wrap on CoreTimingManager::*) ───────────────────
+// Original bodies, callable directly by the Sunbright trace hooks in place of __real_.
+extern "C" void sb_ct_schedule_event_impl(void* self, s64 cycles, void* event_type, u64 userdata,
+                                          int from)
+{
+  static_cast<CoreTiming::CoreTimingManager*>(self)->ScheduleEvent_Impl(
+      cycles, static_cast<CoreTiming::EventType*>(event_type), userdata,
+      static_cast<CoreTiming::FromThread>(from));
+}
+extern "C" void sb_ct_remove_event_impl(void* self, void* event_type)
+{
+  static_cast<CoreTiming::CoreTimingManager*>(self)->RemoveEvent_Impl(
+      static_cast<CoreTiming::EventType*>(event_type));
+}
+// Hook slots (default null = original behavior). Set by sb_install_hooks().
+extern "C" void (*sb_slot_ct_schedule_event)(void*, s64, void*, u64, int) = nullptr;
+extern "C" void (*sb_slot_ct_remove_event)(void*, void*) = nullptr;

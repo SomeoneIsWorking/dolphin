@@ -11,6 +11,7 @@
 #include "Common/ChunkFile.h"
 #include "Common/CommonTypes.h"
 #include "Common/Logging/Log.h"
+#include "Common/SunbrightHooks.h"
 #include "Common/Swap.h"
 #include "Core/HW/DSP.h"
 #include "Core/HW/DSPHLE/DSPHLE.h"
@@ -1445,6 +1446,12 @@ void ZeldaAudioRenderer::FetchVPB(u16 voice_id, VPB* vpb)
 
   if (m_flags & TINY_VPB)
     vpb->Uncompress();
+
+  // Sunbright hook: voice-parameter tracer (runtime/vpb_trace.cpp). Called AFTER the VPB is filled
+  // (the tracer only reads it) — matches the prior --wrap which ran __real_ then read. Default
+  // null = no-op.
+  if (sb_slot_zelda_fetch_vpb)
+    sb_slot_zelda_fetch_vpb(this, voice_id, vpb);
 }
 
 void ZeldaAudioRenderer::StoreVPB(u16 voice_id, VPB* vpb)
@@ -1952,3 +1959,6 @@ void ZeldaAudioRenderer::DoState(PointerWrap& p)
   p.Do(m_buf_front_right_reverb_last8);
 }
 }  // namespace DSP::HLE
+
+// Sunbright hook slot (default null = no-op). Set by sb_install_hooks().
+extern "C" void (*sb_slot_zelda_fetch_vpb)(void*, u16, void*) = nullptr;

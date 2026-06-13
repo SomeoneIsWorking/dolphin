@@ -30,6 +30,7 @@
 #include "Common/ChunkFile.h"
 #include "Common/CommonTypes.h"
 #include "Common/MemoryUtil.h"
+#include "Common/SunbrightHooks.h"
 
 #include "Core/CoreTiming.h"
 #include "Core/DSPEmulator.h"
@@ -386,7 +387,19 @@ void DSPManager::GlobalGenerateDSPInterrupt(Core::System& system, u64 DSPIntType
   system.GetDSP().GenerateDSPInterrupt(DSPIntType, cyclesLate);
 }
 
+// Sunbright hook: native AID ownership (runtime/overrides/aid_native.cpp). When installed the hook
+// strips INT_AID before PI then calls GenerateDSPInterrupt_Impl for the rest. Default null = orig.
 void DSPManager::GenerateDSPInterrupt(u64 DSPIntType, s64 cyclesLate)
+{
+  if (sb_slot_dsp_gen_interrupt)
+  {
+    sb_slot_dsp_gen_interrupt(this, DSPIntType, cyclesLate);
+    return;
+  }
+  GenerateDSPInterrupt_Impl(DSPIntType, cyclesLate);
+}
+
+void DSPManager::GenerateDSPInterrupt_Impl(u64 DSPIntType, s64 cyclesLate)
 {
   // The INT_* enumeration members have values that reflect their bit positions in
   // DSP_CONTROL - we mask by (INT_DSP | INT_ARAM | INT_AID) just to ensure people
@@ -396,7 +409,18 @@ void DSPManager::GenerateDSPInterrupt(u64 DSPIntType, s64 cyclesLate)
 }
 
 // CALLED FROM DSP EMULATOR, POSSIBLY THREADED
+// Sunbright hook: DSP-mail interrupt capture (aid_native.cpp). Default null = original.
 void DSPManager::GenerateDSPInterruptFromDSPEmu(DSPInterruptType type, int cycles_into_future)
+{
+  if (sb_slot_dsp_gen_interrupt_from_emu)
+  {
+    sb_slot_dsp_gen_interrupt_from_emu(this, static_cast<int>(type), cycles_into_future);
+    return;
+  }
+  GenerateDSPInterruptFromDSPEmu_Impl(type, cycles_into_future);
+}
+
+void DSPManager::GenerateDSPInterruptFromDSPEmu_Impl(DSPInterruptType type, int cycles_into_future)
 {
   auto& core_timing = m_system.GetCoreTiming();
   core_timing.ScheduleEvent(cycles_into_future, m_event_type_generate_dsp_interrupt, type,
@@ -421,7 +445,18 @@ void DSPManager::UpdateDSPSlice(int cycles)
 }
 
 // This happens at 4 khz, since 32 bytes at 4khz = 4 bytes at 32 khz (16bit stereo pcm)
+// Sunbright hook: AID claim seam (aid_native.cpp). Default null = original.
 void DSPManager::UpdateAudioDMA()
+{
+  if (sb_slot_dsp_update_audio_dma)
+  {
+    sb_slot_dsp_update_audio_dma(this);
+    return;
+  }
+  UpdateAudioDMA_Impl();
+}
+
+void DSPManager::UpdateAudioDMA_Impl()
 {
   static short zero_samples[8 * 2] = {0};
   if (m_audio_dma.AudioDMAControl.Enable)
@@ -624,3 +659,23 @@ u32 DSPManager::GetARAMSize() const
 }
 
 }  // end of namespace DSP
+
+// ── Sunbright hook plumbing (replaces linker --wrap on DSPManager::*) ──────────────────────────
+// Original bodies, callable directly by the Sunbright hooks in place of __real_.
+extern "C" void sb_dsp_gen_interrupt_impl(void* self, u64 dsp_int_type, s64 cycles_late)
+{
+  static_cast<DSP::DSPManager*>(self)->GenerateDSPInterrupt_Impl(dsp_int_type, cycles_late);
+}
+extern "C" void sb_dsp_gen_interrupt_from_emu_impl(void* self, int type, int cycles_into_future)
+{
+  static_cast<DSP::DSPManager*>(self)->GenerateDSPInterruptFromDSPEmu_Impl(
+      static_cast<DSP::DSPInterruptType>(type), cycles_into_future);
+}
+extern "C" void sb_dsp_update_audio_dma_impl(void* self)
+{
+  static_cast<DSP::DSPManager*>(self)->UpdateAudioDMA_Impl();
+}
+// Hook slots (default null = original behavior). Set by sb_install_hooks().
+extern "C" void (*sb_slot_dsp_gen_interrupt)(void*, u64, s64) = nullptr;
+extern "C" void (*sb_slot_dsp_update_audio_dma)(void*) = nullptr;
+extern "C" void (*sb_slot_dsp_gen_interrupt_from_emu)(void*, int, int) = nullptr;

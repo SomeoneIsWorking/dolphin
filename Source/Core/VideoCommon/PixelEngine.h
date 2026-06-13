@@ -188,6 +188,8 @@ public:
 
   // gfx backend support
   void SetToken(const u16 token, const bool interrupt, int cycle_delay);
+  // Original SetToken body, callable directly by the Sunbright hook (replaces the --wrap __real_).
+  void SetToken_Impl(const u16 token, const bool interrupt, int cycle_delay);
   void SetFinish(int cycle_delay);
   AlphaReadMode GetAlphaReadMode() const { return m_alpha_read.read_mode; }
 

@@ -13,6 +13,7 @@
 #include "Common/CommonTypes.h"
 #include "Common/Logging/Log.h"
 #include "Common/MathUtil.h"
+#include "Common/SunbrightHooks.h"
 #include "Common/Swap.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/Core.h"
@@ -161,7 +162,15 @@ void Mixer::MixerFifo::Mix(s16* samples, std::size_t num_samples)
   }
 }
 
+// Sunbright hook: native audio sink + flow meter (runtime/mixer_trace.cpp). Default null = orig.
 std::size_t Mixer::Mix(s16* samples, std::size_t num_samples)
+{
+  if (sb_slot_mixer_mix)
+    return sb_slot_mixer_mix(this, samples, num_samples);
+  return Mix_Impl(samples, num_samples);
+}
+
+std::size_t Mixer::Mix_Impl(s16* samples, std::size_t num_samples)
 {
   if (!samples)
     return 0;
@@ -213,7 +222,18 @@ std::size_t Mixer::MixSurround(float* samples, std::size_t num_samples)
   return num_samples;
 }
 
+// Sunbright hook (mixer_trace.cpp). Default null = original behavior.
 void Mixer::PushSamples(const s16* samples, std::size_t num_samples)
+{
+  if (sb_slot_mixer_push_samples)
+  {
+    sb_slot_mixer_push_samples(this, samples, num_samples);
+    return;
+  }
+  PushSamples_Impl(samples, num_samples);
+}
+
+void Mixer::PushSamples_Impl(const s16* samples, std::size_t num_samples)
 {
   if (IsOutputSampleRateValid())
   {
@@ -236,7 +256,18 @@ void Mixer::PushSamples(const s16* samples, std::size_t num_samples)
   }
 }
 
+// Sunbright hook (mixer_trace.cpp). Default null = original behavior.
 void Mixer::PushStreamingSamples(const s16* samples, std::size_t num_samples)
+{
+  if (sb_slot_mixer_push_streaming)
+  {
+    sb_slot_mixer_push_streaming(this, samples, num_samples);
+    return;
+  }
+  PushStreamingSamples_Impl(samples, num_samples);
+}
+
+void Mixer::PushStreamingSamples_Impl(const s16* samples, std::size_t num_samples)
 {
   if (IsOutputSampleRateValid())
   {
@@ -317,12 +348,34 @@ void Mixer::PushGBASamples(std::size_t device_number, const s16* samples, std::s
   }
 }
 
+// Sunbright hook (mixer_trace.cpp). Default null = original behavior.
 void Mixer::SetDMAInputSampleRateDivisor(u32 rate_divisor)
+{
+  if (sb_slot_mixer_set_dma_divisor)
+  {
+    sb_slot_mixer_set_dma_divisor(this, rate_divisor);
+    return;
+  }
+  SetDMAInputSampleRateDivisor_Impl(rate_divisor);
+}
+
+void Mixer::SetDMAInputSampleRateDivisor_Impl(u32 rate_divisor)
 {
   m_dma_mixer.SetInputSampleRateDivisor(rate_divisor);
 }
 
+// Sunbright hook (mixer_trace.cpp). Default null = original behavior.
 void Mixer::SetStreamInputSampleRateDivisor(u32 rate_divisor)
+{
+  if (sb_slot_mixer_set_stream_divisor)
+  {
+    sb_slot_mixer_set_stream_divisor(this, rate_divisor);
+    return;
+  }
+  SetStreamInputSampleRateDivisor_Impl(rate_divisor);
+}
+
+void Mixer::SetStreamInputSampleRateDivisor_Impl(u32 rate_divisor)
 {
   m_streaming_mixer.SetInputSampleRateDivisor(rate_divisor);
 }
@@ -332,7 +385,18 @@ void Mixer::SetGBAInputSampleRate(std::size_t device_number, u32 sample_rate)
   m_gba_mixers[device_number].SetInputSampleRateDivisor(GBA_SAMPLE_RATE_DIVIDEND / sample_rate);
 }
 
+// Sunbright hook (mixer_trace.cpp). Default null = original behavior.
 void Mixer::SetStreamingVolume(u32 lvolume, u32 rvolume)
+{
+  if (sb_slot_mixer_set_streaming_volume)
+  {
+    sb_slot_mixer_set_streaming_volume(this, lvolume, rvolume);
+    return;
+  }
+  SetStreamingVolume_Impl(lvolume, rvolume);
+}
+
+void Mixer::SetStreamingVolume_Impl(u32 lvolume, u32 rvolume)
 {
   m_streaming_mixer.SetVolume(std::clamp<u32>(lvolume, 0x00, 0xff),
                               std::clamp<u32>(rvolume, 0x00, 0xff));
@@ -595,3 +659,37 @@ bool Mixer::MixerFifo::Dequeue(Granule* granule)
 
   return m_queue_fading.load(std::memory_order_relaxed);
 }
+
+// ── Sunbright hook plumbing (replaces linker --wrap on Mixer::*) ───────────────────────────────
+// Original bodies, callable directly by the Sunbright hooks in place of __real_.
+extern "C" void sb_mixer_push_samples_impl(void* self, const s16* samples, std::size_t n)
+{
+  static_cast<Mixer*>(self)->PushSamples_Impl(samples, n);
+}
+extern "C" std::size_t sb_mixer_mix_impl(void* self, s16* samples, std::size_t n)
+{
+  return static_cast<Mixer*>(self)->Mix_Impl(samples, n);
+}
+extern "C" void sb_mixer_push_streaming_impl(void* self, const s16* samples, std::size_t n)
+{
+  static_cast<Mixer*>(self)->PushStreamingSamples_Impl(samples, n);
+}
+extern "C" void sb_mixer_set_dma_divisor_impl(void* self, u32 divisor)
+{
+  static_cast<Mixer*>(self)->SetDMAInputSampleRateDivisor_Impl(divisor);
+}
+extern "C" void sb_mixer_set_stream_divisor_impl(void* self, u32 divisor)
+{
+  static_cast<Mixer*>(self)->SetStreamInputSampleRateDivisor_Impl(divisor);
+}
+extern "C" void sb_mixer_set_streaming_volume_impl(void* self, u32 lvolume, u32 rvolume)
+{
+  static_cast<Mixer*>(self)->SetStreamingVolume_Impl(lvolume, rvolume);
+}
+// Hook slots (default null = original behavior). Set by sb_install_hooks().
+extern "C" void (*sb_slot_mixer_push_samples)(void*, const s16*, std::size_t) = nullptr;
+extern "C" std::size_t (*sb_slot_mixer_mix)(void*, s16*, std::size_t) = nullptr;
+extern "C" void (*sb_slot_mixer_push_streaming)(void*, const s16*, std::size_t) = nullptr;
+extern "C" void (*sb_slot_mixer_set_dma_divisor)(void*, u32) = nullptr;
+extern "C" void (*sb_slot_mixer_set_stream_divisor)(void*, u32) = nullptr;
+extern "C" void (*sb_slot_mixer_set_streaming_volume)(void*, u32, u32) = nullptr;
