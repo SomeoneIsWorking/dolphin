@@ -190,6 +190,36 @@ void (*sb_slot_frame_captured)(unsigned xfb_addr, const unsigned char* rgba, int
                                int stride) = nullptr;
 }
 
+// Sunbright 60fps OWNED PRESENT (interp60). When g_sb_own_present != 0 the runtime drives the
+// scan-out itself: VideoInterface.cpp's OutputField does NOT auto-present (it only stashes the
+// live XFB dims into g_sb_owned_*), and the runtime calls sb_present_xfb(addr) once per frame it
+// wants on screen — exactly twice per 30Hz game tick (real, in-between). This makes the present
+// cadence a deterministic R,B,R,B by construction, with zero dependence on Dolphin's VI field
+// parity/phase or the progressive even-field address offset (the residual RRBB doublings, H5).
+extern "C" {
+volatile int g_sb_own_present = 0;
+volatile unsigned g_sb_owned_width = 0, g_sb_owned_stride = 0, g_sb_owned_height = 0;
+// Diagnostics: manual presents driven by the runtime, plus OutputField gated/auto counts.
+volatile unsigned long g_sb_ownpres_manual = 0, g_sb_ownpres_gated = 0, g_sb_ownpres_auto = 0;
+volatile unsigned g_sb_ownpres_last = 0;
+}
+
+// Present a specific XFB address NOW, through the normal ViSwap path (cadence accounting, capture,
+// and Present all reused). Dims come from the last OutputField (the VI's own computation). Called
+// on the CPU/game thread from runtime/overrides/interp_redraw.cpp, same thread that already runs
+// ViSwap inside wait_vi_field — so this is no more re-entrant than the automatic path.
+extern "C" void sb_present_xfb(unsigned xfb_addr)
+{
+  if (!g_presenter || g_sb_owned_width == 0 || g_sb_owned_height == 0)
+    return;
+  g_sb_ownpres_manual++;
+  g_sb_ownpres_last = xfb_addr;
+  auto& core_timing = Core::System::GetInstance().GetCoreTiming();
+  const u64 ticks = core_timing.GetTicks();
+  g_presenter->ViSwap(xfb_addr, g_sb_owned_width, g_sb_owned_stride, g_sb_owned_height, ticks,
+                      core_timing.GetTargetHostTime(ticks));
+}
+
 void Presenter::SbCaptureXFB(u32 xfb_addr)
 {
   if (!m_xfb_entry || !sb_slot_frame_captured || !g_gfx)
