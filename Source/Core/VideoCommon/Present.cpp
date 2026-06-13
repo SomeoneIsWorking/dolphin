@@ -185,19 +185,27 @@ void Presenter::ViSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_height,
     g_sb_present_dup[s & 15] = is_duplicate ? 1 : 0;
     g_sb_present_seq = s + 1;
 
+    // Count UNIQUE presents (skip duplicate XFBs). The VI re-presents the same buffer at 60Hz
+    // regardless, so counting ALL presents always reads ~60 and tells you nothing. A unique present
+    // = a DISTINCT frame actually reached the screen: ~30 at native 30fps, ~60 only when 60fps
+    // interpolation delivers a real in-between frame each field (and the machine keeps up).
+    static unsigned long uniq = 0;
+    if (!is_duplicate)
+      uniq++;
+
     // Sunbright: on-screen readout — internal render res, output window res, and FPS.
-    //   Game FPS  = engine logic-frame rate (g_sb_game_seq, bumped per TDisplay::endRendering).
-    //   Output FPS = presents/sec (this counter); with 60fps interpolation it should be ~2× game.
+    //   Game FPS = engine logic-frame rate (g_sb_game_seq, bumped per TDisplay::endRendering).
+    //   Out FPS  = UNIQUE distinct frames presented/sec (so it actually shows whether interp lands).
     static auto t0 = std::chrono::steady_clock::now();
-    static unsigned long p0 = 0, gm0 = 0;
+    static unsigned long u0 = 0, gm0 = 0;
     static float out_fps = 0.f, game_fps = 0.f;
     const auto now = std::chrono::steady_clock::now();
     const double el = std::chrono::duration<double>(now - t0).count();
     if (el >= 0.5)
     {
-      out_fps = (float)((s + 1 - p0) / el);
+      out_fps = (float)((uniq - u0) / el);
       game_fps = (float)((g_sb_game_seq - gm0) / el);
-      t0 = now; p0 = s + 1; gm0 = g_sb_game_seq;
+      t0 = now; u0 = uniq; gm0 = g_sb_game_seq;
     }
     if ((s % 20) == 0 && g_framebuffer_manager)
     {
