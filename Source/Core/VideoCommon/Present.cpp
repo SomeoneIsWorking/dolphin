@@ -17,7 +17,10 @@
 #include "InputCommon/ControllerInterface/ControllerInterface.h"
 
 #include "Present.h"
+#include "Common/SunbrightHooks.h"
 #include "VideoCommon/AbstractGfx.h"
+#include "VideoCommon/AbstractStagingTexture.h"
+#include "VideoCommon/AbstractTexture.h"
 #include "VideoCommon/FrameDumper.h"
 #include "VideoCommon/FramebufferManager.h"
 #include "VideoCommon/OnScreenDisplay.h"
@@ -175,6 +178,52 @@ bool Presenter::FetchXFB(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_heigh
 extern "C" { volatile unsigned long g_sb_present_seq = 0; volatile unsigned int g_sb_present_ring[16] = {0}; volatile unsigned char g_sb_present_dup[16] = {0}; }
 extern "C" volatile unsigned long g_sb_game_seq = 0;  // bumped by runtime/overrides/interp_redraw.cpp
 
+// Cheap always-on present cadence accounting (no GPU readback, unlike /verify). A clean 60fps
+// interp stream alternates real,in-between addresses; a DOUBLING (two unique presents to the same
+// buffer base in a row) is a 60Hz hitch. Counted over unique presents; read via /interp60.
+extern "C" { volatile unsigned long g_sb_cadence_alt = 0, g_sb_cadence_dbl = 0; }
+
+// Sunbright 60fps verification capture (see Common/SunbrightHooks.h). Default off (zero cost).
+extern "C" {
+int sb_capture_frames = 0;
+void (*sb_slot_frame_captured)(unsigned xfb_addr, const unsigned char* rgba, int w, int h,
+                               int stride) = nullptr;
+}
+
+void Presenter::SbCaptureXFB(u32 xfb_addr)
+{
+  if (!m_xfb_entry || !sb_slot_frame_captured || !g_gfx)
+    return;
+  const AbstractTexture* src = m_xfb_entry->texture.get();
+  if (!src)
+    return;
+  const MathUtil::Rectangle<int> rect = m_xfb_rect;
+  const u32 w = static_cast<u32>(rect.GetWidth()), h = static_cast<u32>(rect.GetHeight());
+  if (!w || !h)
+    return;
+  // Reused readback staging texture (this runs only on the video thread).
+  static std::unique_ptr<AbstractStagingTexture> rb;
+  if (!rb || rb->GetConfig().width != w || rb->GetConfig().height != h)
+  {
+    rb.reset();
+    rb = g_gfx->CreateStagingTexture(
+        StagingTextureType::Readback,
+        TextureConfig(w, h, 1, 1, 1, AbstractTextureFormat::RGBA8, 0,
+                      AbstractTextureType::Texture_2DArray));
+    if (!rb)
+      return;
+  }
+  rb->CopyFromTexture(src, rect, 0, 0, rb->GetRect());
+  rb->Flush();
+  if (rb->Map())
+  {
+    sb_slot_frame_captured(xfb_addr, reinterpret_cast<const unsigned char*>(rb->GetMappedPointer()),
+                           static_cast<int>(w), static_cast<int>(h),
+                           static_cast<int>(rb->GetMappedStride()));
+    rb->Unmap();
+  }
+}
+
 void Presenter::ViSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_height, u64 ticks,
                        TimePoint presentation_time)
 {
@@ -185,13 +234,31 @@ void Presenter::ViSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_height,
     g_sb_present_dup[s & 15] = is_duplicate ? 1 : 0;
     g_sb_present_seq = s + 1;
 
+    // Sunbright 60fps verification: capture each unique present's XFB to CPU for the runtime's
+    // midpoint analysis (armed by /verify). Only unique frames — a duplicate is the VI re-showing
+    // the same buffer, not a distinct rendered frame.
+    if (!is_duplicate && sb_capture_frames > 0)
+    {
+      SbCaptureXFB(xfb_addr);
+      sb_capture_frames--;
+    }
+
     // Count UNIQUE presents (skip duplicate XFBs). The VI re-presents the same buffer at 60Hz
     // regardless, so counting ALL presents always reads ~60 and tells you nothing. A unique present
     // = a DISTINCT frame actually reached the screen: ~30 at native 30fps, ~60 only when 60fps
     // interpolation delivers a real in-between frame each field (and the machine keeps up).
     static unsigned long uniq = 0;
+    static unsigned int last_uniq_base = 0xffffffff;
     if (!is_duplicate)
+    {
       uniq++;
+      if (last_uniq_base != 0xffffffff)
+      {
+        if ((xfb_addr & 0x400000u) == (last_uniq_base & 0x400000u)) g_sb_cadence_dbl++;
+        else g_sb_cadence_alt++;
+      }
+      last_uniq_base = xfb_addr;
+    }
 
     // Sunbright: on-screen readout — internal render res, output window res, and FPS.
     //   Game FPS = engine logic-frame rate (g_sb_game_seq, bumped per TDisplay::endRendering).
