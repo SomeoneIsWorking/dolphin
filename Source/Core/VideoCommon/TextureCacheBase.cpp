@@ -94,6 +94,9 @@ void TextureCacheBase::CheckTempSize(size_t required_size)
 // Sunbright interp60: set during the in-between GX-stream replay (defined in BPStructs.cpp).
 extern "C" volatile int g_sb_efb_redirect_inbetween;
 extern "C" volatile unsigned long g_sb_efb_redirects;
+extern "C" volatile unsigned long g_sb_efb_owned_hits = 0;   // in-between samples that hit an owned tex
+extern "C" volatile unsigned long g_sb_efb_owned_miss = 0;   // in-between samples with NO owned tex (fell through)
+extern "C" volatile unsigned long g_sb_efb_inbetween_ramwrite = 0;  // in-between copies that fell through to RAM
 
 TextureCacheBase::TextureCacheBase()
 {
@@ -1322,7 +1325,11 @@ RcTcacheEntry TextureCacheBase::GetTexture(const int textureCacheSafetyColorSamp
   {
     auto it = m_sb_efb_own.find(texture_info.GetRawAddress());
     if (it != m_sb_efb_own.end() && it->second)
+    {
+      g_sb_efb_owned_hits++;
       return it->second;
+    }
+    g_sb_efb_owned_miss++;
   }
 
   // Hash assigned to texcache entry (also used to generate filenames used for texture dumping and
@@ -2429,6 +2436,12 @@ void TextureCacheBase::CopyRenderTargetToTexture(
       }
     }
   }
+
+  // Sunbright diag: reaching here during the in-between means the owned branch was NOT taken
+  // (copy_to_vram false for this copy) — it falls through to the normal path and WRITES guest RAM
+  // at the real screen-space address (the lag clobber). Count it.
+  if (g_sb_efb_redirect_inbetween && !is_xfb_copy)
+    g_sb_efb_inbetween_ramwrite++;
 
   if (copy_to_ram)
   {

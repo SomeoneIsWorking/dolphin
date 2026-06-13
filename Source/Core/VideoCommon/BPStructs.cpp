@@ -312,15 +312,31 @@ static void BPWritten(PixelShaderManager& pixel_shader_manager, XFStateManager& 
       // Check if we are to copy from the EFB or draw to the XFB
       if (PE_copy.copy_to_xfb == 0)
       {
-        // bpmem.zcontrol.pixel_format to PixelFormat::Z24 is when the game wants to copy from
-        // ZBuffer (Zbuffer uses 24-bit Format). During the in-between replay this routes into the
-        // Sunbright-owned per-field texture (TextureCacheBase.cpp, gated on g_sb_efb_redirect_inbetween).
-        bool is_depth_copy = bpmem.zcontrol.pixel_format == PixelFormat::Z24;
-        g_texture_cache->CopyRenderTargetToTexture(
-            destAddr, PE_copy.tp_realFormat(), copy_width, copy_height, destStride, is_depth_copy,
-            srcRect, PE_copy.intensity_fmt && PE_copy.auto_conv, PE_copy.half_scale, 1.0f,
-            s_gammaLUT[PE_copy.gamma], bpmem.triggerEFBCopy.clamp_top,
-            bpmem.triggerEFBCopy.clamp_bottom, bpmem.copyfilter.GetCoefficients());
+        // Sunbright interp60 EFB-feedback policy on the in-between replay:
+        //   DEFAULT (skip): don't re-copy the screen-space texture on the in-between, so it keeps
+        //     the REAL field's content. The real field's texture is never clobbered (no half-step
+        //     lag — user-confirmed) and the in-between samples the real field's frozen screen
+        //     texture (30fps screen-space layer; the Mario water-reflection ghost is the known
+        //     tradeoff of holding it). This is the confirmed-good baseline.
+        //   SUNBRIGHT_EFB_OWN: route the copy into a Sunbright-owned per-field texture
+        //     (TextureCacheBase m_sb_efb_own) so the in-between gets its own interpolated readback
+        //     (reflection tracks). Under evaluation — regressed the lag in testing; off by default.
+        static const int own_mode = getenv("SUNBRIGHT_EFB_OWN") ? 1 : 0;
+        if (g_sb_efb_redirect_inbetween && !own_mode)
+        {
+          g_sb_efb_redirects++;   // skipped this in-between copy
+        }
+        else
+        {
+          // bpmem.zcontrol.pixel_format to PixelFormat::Z24 is when the game wants to copy from
+          // ZBuffer (Zbuffer uses 24-bit Format).
+          bool is_depth_copy = bpmem.zcontrol.pixel_format == PixelFormat::Z24;
+          g_texture_cache->CopyRenderTargetToTexture(
+              destAddr, PE_copy.tp_realFormat(), copy_width, copy_height, destStride, is_depth_copy,
+              srcRect, PE_copy.intensity_fmt && PE_copy.auto_conv, PE_copy.half_scale, 1.0f,
+              s_gammaLUT[PE_copy.gamma], bpmem.triggerEFBCopy.clamp_top,
+              bpmem.triggerEFBCopy.clamp_bottom, bpmem.copyfilter.GetCoefficients());
+        }
       }
       else
       {
