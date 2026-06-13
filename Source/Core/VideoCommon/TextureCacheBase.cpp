@@ -91,6 +91,9 @@ void TextureCacheBase::CheckTempSize(size_t required_size)
   m_temp = static_cast<u8*>(Common::AllocateAlignedMemory(m_temp_size, 16));
 }
 
+// Sunbright interp60: set during the in-between GX-stream replay (defined in BPStructs.cpp).
+extern "C" volatile int g_sb_efb_redirect_inbetween;
+
 TextureCacheBase::TextureCacheBase()
 {
   SetBackupConfig(g_ActiveConfig);
@@ -2195,6 +2198,13 @@ void TextureCacheBase::CopyRenderTargetToTexture(
   bool copy_to_ram =
       !(is_xfb_copy ? g_ActiveConfig.bSkipXFBCopyToRam : g_ActiveConfig.bSkipEFBCopyToRam) ||
       !copy_to_vram;
+  // Sunbright interp60: during the in-between replay the dest address was redirected to ALT
+  // (BPStructs.cpp), which aliases live guest RAM. The VRAM texture-cache entry is created below and
+  // is all the in-between's consumers need; the entire RAM-touching block (the copy_to_ram write AND
+  // the copy_to_vram "uninitialize marker" write) must be skipped so the alt address never corrupts
+  // game memory. `sb_skip_ram` gates that block. (Forcing copy_to_ram=false is NOT enough — the
+  // else branch still UninitializeEFBMemory()'s the RAM.)
+  const bool sb_skip_ram = g_sb_efb_redirect_inbetween && copy_to_vram && !is_xfb_copy;
 
   // tex_w and tex_h are the native size of the texture in the GC memory.
   // The size scaled_* represents the emulated texture. Those differ
@@ -2385,7 +2395,11 @@ void TextureCacheBase::CopyRenderTargetToTexture(
     }
   }
 
-  if (copy_to_ram)
+  if (sb_skip_ram)
+  {
+    // Sunbright interp60: redirected in-between copy — VRAM entry only, touch NO guest RAM.
+  }
+  else if (copy_to_ram)
   {
     const std::array<u32, 3> coefficients = GetRAMCopyFilterCoefficients(filter_coefficients);
     PixelFormat srcFormat = bpmem.zcontrol.pixel_format;
