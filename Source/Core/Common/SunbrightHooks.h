@@ -52,6 +52,15 @@ extern bool (*sb_slot_jit_trampoline)(void* jit, u32 em_address);
 //   index  = the indexed-load index, size = words to produce, out = caller buffer[size].
 extern bool (*sb_slot_xf_indexed)(u32 array, u32 base, u32 stride, u32 index, u32 size, u32* out);
 
+// ── 60fps verification capture (VideoCommon, Present.cpp ViSwap) ───────────────────────────────
+// When sb_capture_frames > 0, each UNIQUE present reads its XFB back to CPU (RGBA8) and calls this
+// hook tagged with the XFB address (real frame vs the in-between's alt = real ^ 0x400000), then
+// decrements the counter. Lets the runtime build the ordered N, N+1/2, N+1 present sequence and
+// verify the in-between is a true visual midpoint (consecutive pixel diffs). Default null/0 = off.
+extern int sb_capture_frames;
+extern void (*sb_slot_frame_captured)(unsigned xfb_addr, const unsigned char* rgba, int w, int h,
+                                      int stride);
+
 // ── GPFifo (Core) ────────────────────────────────────────────────────────────────────────────
 // GPFifoManager::Write8/16/32/64 — foreign gather-pipe write funnel (gpfifo_wrap.cpp).
 extern void (*sb_slot_gpfifo_write8)(void* self, u8 v);

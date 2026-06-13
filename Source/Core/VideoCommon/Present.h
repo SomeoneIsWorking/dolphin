@@ -116,6 +116,10 @@ private:
 
   void ProcessFrameDumping(u64 ticks) const;
 
+  // Sunbright 60fps verification: read the just-presented XFB back to CPU and hand it to the
+  // runtime capture hook (sb_slot_frame_captured), tagged by xfb_addr. Armed via sb_capture_frames.
+  void SbCaptureXFB(u32 xfb_addr);
+
   void OnBackBufferSizeChanged();
 
   // Scales a raw XFB resolution to the target (display) aspect ratio,
