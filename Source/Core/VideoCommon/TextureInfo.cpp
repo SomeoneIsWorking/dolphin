@@ -17,13 +17,6 @@
 #include "VideoCommon/BPMemory.h"
 #include "VideoCommon/TextureDecoder.h"
 
-// Sunbright interp60: during the in-between GX-stream replay, EFB->texture copies were redirected
-// to ALT (orig ^ 0x400000) so the in-between has its own per-field screen-space readback. The
-// consumer's texture sample must follow to ALT for any address that was an EFB-copy dest this
-// in-between, so the effect samples the interpolated copy (not the real field's). (BPStructs.cpp)
-extern "C" volatile int g_sb_efb_redirect_inbetween;
-extern "C" bool sb_efb_redir_has(u32 addr);
-
 TextureInfo TextureInfo::FromStage(u32 stage)
 {
   const auto tex = bpmem.tex.GetUnit(stage);
@@ -34,9 +27,7 @@ TextureInfo TextureInfo::FromStage(u32 stage)
   const auto width = tex.texImage0.width + 1;
   const auto height = tex.texImage0.height + 1;
 
-  u32 address = (tex.texImage3.image_base /* & 0x1FFFFF*/) << 5;
-  if (g_sb_efb_redirect_inbetween && sb_efb_redir_has(address))
-    address ^= 0x00400000u;   // follow the in-between's redirected EFB-copy to its ALT slot
+  const u32 address = (tex.texImage3.image_base /* & 0x1FFFFF*/) << 5;
 
   const u32 tlutaddr = tex.texTlut.tmem_offset << 9;
   std::span<const u8> tlut_data = TexDecoder_GetTmemSpan(tlutaddr);

@@ -414,6 +414,14 @@ private:
   // but it's possible for invalidated TCache entries to live on elsewhere
   TexAddrCache m_textures_by_address;
 
+  // Sunbright interp60: EFB-feedback textures OWNED by the 60fps interpolator. During the
+  // in-between GX-stream replay, EFB->texture copies go into these entries (keyed by guest copy
+  // address) instead of m_textures_by_address, and GetTexture returns them while the in-between
+  // samples — so the in-between has its OWN per-field screen-space readback (water/mirror/graffiti
+  // reflect the interpolated scene) without touching guest RAM, the address cache, hashing, or
+  // overlap invalidation. The real field uses its normal m_textures_by_address entries.
+  std::map<u32, RcTcacheEntry> m_sb_efb_own;
+
   // m_textures_by_hash is an alternative view of the texture cache
   // All textures in here will also be in m_textures_by_address
   TexHashCache m_textures_by_hash;
