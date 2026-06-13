@@ -37,6 +37,13 @@
 #include "VideoCommon/VideoConfig.h"
 #include "VideoCommon/VideoEvents.h"
 
+// Sunbright interp60 owned-present flags (defined in VideoCommon/Present.cpp). When set, the
+// runtime drives scan-out manually for a deterministic R,B,R,B cadence; OutputField stashes the
+// live XFB dims here and skips the automatic per-field present.
+extern "C" volatile int g_sb_own_present;
+extern "C" volatile unsigned g_sb_owned_width, g_sb_owned_stride, g_sb_owned_height;
+extern "C" volatile unsigned long g_sb_ownpres_gated, g_sb_ownpres_auto;
+
 namespace VideoInterface
 {
 VideoInterfaceManager::VideoInterfaceManager(Core::System& system) : m_system(system)
@@ -861,6 +868,20 @@ void VideoInterfaceManager::OutputField(FieldType field, u64 ticks)
   }
 
   LogField(field, xfbAddr);
+
+  // Sunbright interp60: when the runtime OWNS presentation (g_sb_own_present), stash the live XFB
+  // dims for the runtime's manual sb_present_xfb() and skip the automatic per-field present — the
+  // runtime drives a deterministic R,B,R,B cadence itself (Present.cpp). Dims are still computed
+  // above from the VI's own register state, so the manual present matches the VI exactly.
+  g_sb_owned_width = fbWidth;
+  g_sb_owned_stride = fbStride;
+  g_sb_owned_height = fbHeight;
+  if (g_sb_own_present)
+  {
+    g_sb_ownpres_gated++;
+    return;
+  }
+  g_sb_ownpres_auto++;
 
   // Outputting the entire frame using a single set of VI register values isn't accurate, as games
   // can change the register values during scanout. To correctly emulate the scanout process, we
