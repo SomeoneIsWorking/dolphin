@@ -31,6 +31,8 @@
 #include "Core/HW/Memmap.h"
 #include "Core/System.h"
 
+std::unique_ptr<DSP::HLE::UCodeInterface> (*g_sb_ucode_factory)(u32 crc, DSP::HLE::DSPHLE* dsphle, bool wii) = nullptr;
+
 namespace DSP::HLE
 {
 UCodeInterface::UCodeInterface(DSPHLE* dsphle, u32 crc)
@@ -133,6 +135,12 @@ void UCodeInterface::DoStateShared(PointerWrap& p)
 
 std::unique_ptr<UCodeInterface> UCodeFactory(u32 crc, DSPHLE* dsphle, bool wii)
 {
+  if (g_sb_ucode_factory)
+  {
+    auto r = g_sb_ucode_factory(crc, dsphle, wii);
+    if (r)
+      return r;
+  }
   switch (crc)
   {
   case UCODE_ROM:

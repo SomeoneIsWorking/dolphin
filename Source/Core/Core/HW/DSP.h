@@ -90,6 +90,7 @@ public:
 
   // TODO: Maybe rethink this? The timing is unpredictable.
   void GenerateDSPInterruptFromDSPEmu(DSPInterruptType type, int cycles_into_future = 0);
+  void RaiseInterruptBits(u64 DSPIntType, s64 cyclesLate);  // bypass hook, for native pump
 
   // Audio/DSP Helper
   u8 ReadARAM(u32 address) const;

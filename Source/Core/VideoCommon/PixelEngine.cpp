@@ -22,6 +22,8 @@
 #include "VideoCommon/PerfQueryBase.h"
 #include "VideoCommon/VideoBackendBase.h"
 
+void (*g_sb_pe_set_token)(void* self, u16 token, bool interrupt, int cycles) = nullptr;
+
 namespace PixelEngine
 {
 enum
@@ -228,6 +230,9 @@ void PixelEngineManager::RaiseEvent(int cycles_into_future)
 // THIS IS EXECUTED FROM VIDEO THREAD
 void PixelEngineManager::SetToken(const u16 token, const bool interrupt, int cycles_into_future)
 {
+  if (g_sb_pe_set_token)
+    g_sb_pe_set_token(this, token, interrupt, cycles_into_future);
+
   DEBUG_LOG_FMT(PIXELENGINE, "VIDEO Backend raises INT_CAUSE_PE_TOKEN (btw, token: {:04x})", token);
 
   std::lock_guard lk(m_token_finish_mutex);
