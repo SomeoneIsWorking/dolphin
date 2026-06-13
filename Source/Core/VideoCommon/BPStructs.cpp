@@ -43,6 +43,40 @@
 
 using namespace BPFunctions;
 
+// Sunbright interp60: when set (by the runtime around the in-between GX-stream replay), every
+// EFB->texture copy executed here is redirected to an ALT address (orig ^ 0x400000) so the
+// in-between gets its OWN per-field screen-space texture instead of overwriting the real field's
+// (water refraction / mirror / graffiti source). The copy is forced VRAM-only (no guest-RAM write,
+// see TextureCacheBase.cpp) so redirecting the address can never corrupt game memory. Consumers
+// (TextureInfo::FromStage) redirect their sample to the same ALT for any address recorded here, so
+// the in-between samples its own per-field readback -> the reflection tracks the interpolated
+// geometry (no ghost) AND the real field's texture is never clobbered (no lag).
+extern "C" volatile int g_sb_efb_redirect_inbetween = 0;
+extern "C" volatile unsigned long g_sb_efb_redirects = 0;  // count of EFB->tex copies redirected
+
+namespace {
+constexpr int kSbEfbRedirMax = 16;
+u32 g_sb_efb_redir[kSbEfbRedirMax];
+int g_sb_efb_redir_n = 0;
+}  // namespace
+// Recorded orig EFB-copy dests this in-between (so the consumer sample follows to ALT). Cleared at
+// the start of each in-between by the runtime.
+extern "C" void sb_efb_redir_clear() { g_sb_efb_redir_n = 0; }
+extern "C" void sb_efb_redir_add(u32 orig) {
+  // Isolation gate: SUNBRIGHT_EFB_NOCONSUMER copies to alt but does NOT track for the consumer
+  // redirect (so TextureInfo samples orig). Used to bisect copy-side vs consumer-side corruption.
+  static const int noconsumer = getenv("SUNBRIGHT_EFB_NOCONSUMER") ? 1 : 0;
+  if (noconsumer) return;
+  for (int i = 0; i < g_sb_efb_redir_n; i++)
+    if (g_sb_efb_redir[i] == orig) return;
+  if (g_sb_efb_redir_n < kSbEfbRedirMax) g_sb_efb_redir[g_sb_efb_redir_n++] = orig;
+}
+extern "C" bool sb_efb_redir_has(u32 addr) {
+  for (int i = 0; i < g_sb_efb_redir_n; i++)
+    if (g_sb_efb_redir[i] == addr) return true;
+  return false;
+}
+
 static constexpr Common::EnumMap<float, GammaCorrection::Invalid2_2> s_gammaLUT = {1.0f, 1.7f, 2.2f,
                                                                                    2.2f};
 
@@ -303,11 +337,24 @@ static void BPWritten(PixelShaderManager& pixel_shader_manager, XFStateManager& 
       // Check if we are to copy from the EFB or draw to the XFB
       if (PE_copy.copy_to_xfb == 0)
       {
+        // Sunbright interp60: during the in-between REPLAY, give this EFB->texture copy its OWN
+        // per-field destination at ALT = orig ^ 0x400000 (record orig so the consumer sample
+        // follows). The copy is forced VRAM-only (TextureCacheBase.cpp) so the ALT address never
+        // writes guest RAM — redirecting it cannot corrupt game state. Result: the in-between
+        // samples its own interpolated-EFB readback (reflection tracks the moving geometry, no
+        // ghost) and the real field's texture at orig is left intact (no half-step lag).
+        u32 efb_copy_dest = destAddr;
+        if (g_sb_efb_redirect_inbetween)
+        {
+          sb_efb_redir_add(destAddr);
+          efb_copy_dest ^= 0x00400000u;
+          g_sb_efb_redirects++;
+        }
         // bpmem.zcontrol.pixel_format to PixelFormat::Z24 is when the game wants to copy from
         // ZBuffer (Zbuffer uses 24-bit Format)
         bool is_depth_copy = bpmem.zcontrol.pixel_format == PixelFormat::Z24;
         g_texture_cache->CopyRenderTargetToTexture(
-            destAddr, PE_copy.tp_realFormat(), copy_width, copy_height, destStride, is_depth_copy,
+            efb_copy_dest, PE_copy.tp_realFormat(), copy_width, copy_height, destStride, is_depth_copy,
             srcRect, PE_copy.intensity_fmt && PE_copy.auto_conv, PE_copy.half_scale, 1.0f,
             s_gammaLUT[PE_copy.gamma], bpmem.triggerEFBCopy.clamp_top,
             bpmem.triggerEFBCopy.clamp_bottom, bpmem.copyfilter.GetCoefficients());
