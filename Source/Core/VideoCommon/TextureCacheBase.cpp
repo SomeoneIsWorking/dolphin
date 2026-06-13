@@ -93,6 +93,7 @@ void TextureCacheBase::CheckTempSize(size_t required_size)
 
 // Sunbright interp60: set during the in-between GX-stream replay (defined in BPStructs.cpp).
 extern "C" volatile int g_sb_efb_redirect_inbetween;
+extern "C" volatile unsigned long g_sb_efb_redirects;
 
 TextureCacheBase::TextureCacheBase()
 {
@@ -144,6 +145,7 @@ void TextureCacheBase::Invalidate()
     bind.reset();
   m_textures_by_hash.clear();
   m_textures_by_address.clear();
+  m_sb_efb_own.clear();   // Sunbright interp60: release the owned per-field EFB textures too
 
   m_texture_pool.clear();
 }
@@ -1312,6 +1314,17 @@ RcTcacheEntry TextureCacheBase::GetTexture(const int textureCacheSafetyColorSamp
   if (!texture_info.IsDataValid())
     return {};
 
+  // Sunbright interp60: while the in-between is sampling, return the Sunbright-owned per-field EFB
+  // texture for this address if one exists (created by the in-between's EFB copy above). This is
+  // how the in-between's water/mirror/graffiti sample their OWN interpolated readback instead of
+  // the real field's. The real field (flag off) takes the normal cache path below.
+  if (g_sb_efb_redirect_inbetween)
+  {
+    auto it = m_sb_efb_own.find(texture_info.GetRawAddress());
+    if (it != m_sb_efb_own.end() && it->second)
+      return it->second;
+  }
+
   // Hash assigned to texcache entry (also used to generate filenames used for texture dumping and
   // custom texture lookup)
   u64 base_hash = TEXHASH_INVALID;
@@ -2198,13 +2211,6 @@ void TextureCacheBase::CopyRenderTargetToTexture(
   bool copy_to_ram =
       !(is_xfb_copy ? g_ActiveConfig.bSkipXFBCopyToRam : g_ActiveConfig.bSkipEFBCopyToRam) ||
       !copy_to_vram;
-  // Sunbright interp60: during the in-between replay the dest address was redirected to ALT
-  // (BPStructs.cpp), which aliases live guest RAM. The VRAM texture-cache entry is created below and
-  // is all the in-between's consumers need; the entire RAM-touching block (the copy_to_ram write AND
-  // the copy_to_vram "uninitialize marker" write) must be skipped so the alt address never corrupts
-  // game memory. `sb_skip_ram` gates that block. (Forcing copy_to_ram=false is NOT enough — the
-  // else branch still UninitializeEFBMemory()'s the RAM.)
-  const bool sb_skip_ram = g_sb_efb_redirect_inbetween && copy_to_vram && !is_xfb_copy;
 
   // tex_w and tex_h are the native size of the texture in the GC memory.
   // The size scaled_* represents the emulated texture. Those differ
@@ -2310,6 +2316,35 @@ void TextureCacheBase::CopyRenderTargetToTexture(
       !is_depth_copy &&
       (scaleByHalf || g_framebuffer_manager->GetEFBScale() != 1 || y_scale > 1.0f);
 
+  // Sunbright interp60: during the in-between replay, copy this EFB->texture into a Sunbright-OWNED
+  // entry (m_sb_efb_own, keyed by the guest copy address) and RETURN — never touching guest RAM,
+  // m_textures_by_address, hashing, or overlap invalidation. GetTexture returns this owned entry
+  // while the in-between samples, so the screen-space effect reflects the interpolated scene (no
+  // ghost) and the real field's normal cache entry at the same address is left intact (no lag).
+  if (g_sb_efb_redirect_inbetween && !is_xfb_copy && copy_to_vram)
+  {
+    const TextureConfig config(scaled_tex_w, scaled_tex_h, 1,
+                               g_framebuffer_manager->GetEFBLayers(), 1,
+                               AbstractTextureFormat::RGBA8, AbstractTextureFlag_RenderTarget,
+                               AbstractTextureType::Texture_2DArray);
+    RcTcacheEntry oe = AllocateCacheEntry(config);
+    if (oe)
+    {
+      oe->SetGeneralParameters(dstAddr, 0, baseFormat, false);
+      oe->SetDimensions(tex_w, tex_h, 1);
+      oe->frameCount = FRAMECOUNT_INVALID;
+      oe->SetEfbCopy(dstStride);
+      oe->may_have_overlapping_textures = false;
+      oe->is_custom_tex = false;
+      CopyEFBToCacheEntry(oe, is_depth_copy, srcRect, scaleByHalf, linear_filter, dstFormat,
+                          isIntensity, gamma, clamp_top, clamp_bottom,
+                          GetVRAMCopyFilterCoefficients(filter_coefficients));
+      m_sb_efb_own[dstAddr] = oe;
+      g_sb_efb_redirects++;
+    }
+    return;
+  }
+
   RcTcacheEntry entry;
   if (copy_to_vram)
   {
@@ -2395,11 +2430,7 @@ void TextureCacheBase::CopyRenderTargetToTexture(
     }
   }
 
-  if (sb_skip_ram)
-  {
-    // Sunbright interp60: redirected in-between copy — VRAM entry only, touch NO guest RAM.
-  }
-  else if (copy_to_ram)
+  if (copy_to_ram)
   {
     const std::array<u32, 3> coefficients = GetRAMCopyFilterCoefficients(filter_coefficients);
     PixelFormat srcFormat = bpmem.zcontrol.pixel_format;
