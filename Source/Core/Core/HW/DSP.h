@@ -91,6 +91,11 @@ public:
   // TODO: Maybe rethink this? The timing is unpredictable.
   void GenerateDSPInterruptFromDSPEmu(DSPInterruptType type, int cycles_into_future = 0);
 
+  // Original bodies, callable directly by the Sunbright hooks (replace the --wrap __real_).
+  void GenerateDSPInterrupt_Impl(u64 DSPIntType, s64 cyclesLate);
+  void GenerateDSPInterruptFromDSPEmu_Impl(DSPInterruptType type, int cycles_into_future);
+  void UpdateAudioDMA_Impl();
+
   // Audio/DSP Helper
   u8 ReadARAM(u32 address) const;
   void WriteARAM(u8 value, u32 address);

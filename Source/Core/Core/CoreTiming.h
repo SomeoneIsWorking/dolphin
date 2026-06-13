@@ -120,6 +120,11 @@ public:
   void ScheduleEvent(s64 cycles_into_future, EventType* event_type, u64 userdata = 0,
                      FromThread from = FromThread::CPU);
 
+  // Original bodies, callable directly by the Sunbright trace hooks (replace the --wrap __real_).
+  void ScheduleEvent_Impl(s64 cycles_into_future, EventType* event_type, u64 userdata,
+                          FromThread from);
+  void RemoveEvent_Impl(EventType* event_type);
+
   // We only permit one event of each type in the queue at a time.
   void RemoveEvent(EventType* event_type);
   void RemoveAllEvents(EventType* event_type);

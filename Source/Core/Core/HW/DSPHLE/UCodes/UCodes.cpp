@@ -14,6 +14,7 @@
 #include "Common/CommonTypes.h"
 #include "Common/Hash.h"
 #include "Common/Logging/Log.h"
+#include "Common/SunbrightHooks.h"
 #include "Common/Swap.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/ConfigManager.h"
@@ -133,6 +134,14 @@ void UCodeInterface::DoStateShared(PointerWrap& p)
 
 std::unique_ptr<UCodeInterface> UCodeFactory(u32 crc, DSPHLE* dsphle, bool wii)
 {
+  // Sunbright hook: native SMS DAC ucode selection (runtime/overrides/zelda_ucode_native.cpp).
+  // The hook returns a UCodeInterface* to override, or null to fall through to Dolphin's factory.
+  // Default-null hook pointer = original behavior.
+  if (sb_slot_ucode_factory)
+  {
+    if (void* native = sb_slot_ucode_factory(crc, dsphle, wii))
+      return std::unique_ptr<UCodeInterface>(static_cast<UCodeInterface*>(native));
+  }
   switch (crc)
   {
   case UCODE_ROM:
@@ -242,3 +251,6 @@ std::unique_ptr<UCodeInterface> UCodeFactory(u32 crc, DSPHLE* dsphle, bool wii)
   return nullptr;
 }
 }  // namespace DSP::HLE
+
+// Sunbright hook slot (default null = original behavior). Set by sb_install_hooks().
+extern "C" void* (*sb_slot_ucode_factory)(u32 crc, void* dsphle, bool wii) = nullptr;

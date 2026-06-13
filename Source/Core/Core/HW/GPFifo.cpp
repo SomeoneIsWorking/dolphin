@@ -8,6 +8,7 @@
 
 #include "Common/ChunkFile.h"
 #include "Common/CommonTypes.h"
+#include "Common/SunbrightHooks.h"
 #include "Common/Swap.h"
 #include "Core/HW/Memmap.h"
 #include "Core/HW/ProcessorInterface.h"
@@ -130,28 +131,31 @@ void GPFifoManager::CheckGatherPipe()
   }
 }
 
+// Sunbright hooks: foreign gather-pipe write funnel (runtime/gpfifo_wrap.cpp). When installed, a
+// hook routes the write into the held GX stream while the assembler is armed, else calls the
+// matching *_impl (the original body). Default-null = original behavior.
 void GPFifoManager::Write8(const u8 value)
 {
-  FastWrite8(value);
-  CheckGatherPipe();
+  if (sb_slot_gpfifo_write8) { sb_slot_gpfifo_write8(this, value); return; }
+  sb_gpfifo_write8_impl(this, value);
 }
 
 void GPFifoManager::Write16(const u16 value)
 {
-  FastWrite16(value);
-  CheckGatherPipe();
+  if (sb_slot_gpfifo_write16) { sb_slot_gpfifo_write16(this, value); return; }
+  sb_gpfifo_write16_impl(this, value);
 }
 
 void GPFifoManager::Write32(const u32 value)
 {
-  FastWrite32(value);
-  CheckGatherPipe();
+  if (sb_slot_gpfifo_write32) { sb_slot_gpfifo_write32(this, value); return; }
+  sb_gpfifo_write32_impl(this, value);
 }
 
 void GPFifoManager::Write64(const u64 value)
 {
-  FastWrite64(value);
-  CheckGatherPipe();
+  if (sb_slot_gpfifo_write64) { sb_slot_gpfifo_write64(this, value); return; }
+  sb_gpfifo_write64_impl(this, value);
 }
 
 void GPFifoManager::FastWrite8(const u8 value)
@@ -195,3 +199,35 @@ void FastCheckGatherPipe(GPFifoManager& gpfifo)
   gpfifo.FastCheckGatherPipe();
 }
 }  // namespace GPFifo
+
+// ── Sunbright hook plumbing (replaces linker --wrap on GPFifoManager::Write*) ─────────────────
+// Original bodies, callable directly by the Sunbright hook in place of __real_.
+extern "C" void sb_gpfifo_write8_impl(void* self, u8 v)
+{
+  auto* g = static_cast<GPFifo::GPFifoManager*>(self);
+  g->FastWrite8(v);
+  g->CheckGatherPipe();
+}
+extern "C" void sb_gpfifo_write16_impl(void* self, u16 v)
+{
+  auto* g = static_cast<GPFifo::GPFifoManager*>(self);
+  g->FastWrite16(v);
+  g->CheckGatherPipe();
+}
+extern "C" void sb_gpfifo_write32_impl(void* self, u32 v)
+{
+  auto* g = static_cast<GPFifo::GPFifoManager*>(self);
+  g->FastWrite32(v);
+  g->CheckGatherPipe();
+}
+extern "C" void sb_gpfifo_write64_impl(void* self, u64 v)
+{
+  auto* g = static_cast<GPFifo::GPFifoManager*>(self);
+  g->FastWrite64(v);
+  g->CheckGatherPipe();
+}
+// Hook slots (default null = original behavior). Set by sb_install_hooks().
+extern "C" void (*sb_slot_gpfifo_write8)(void*, u8) = nullptr;
+extern "C" void (*sb_slot_gpfifo_write16)(void*, u16) = nullptr;
+extern "C" void (*sb_slot_gpfifo_write32)(void*, u32) = nullptr;
+extern "C" void (*sb_slot_gpfifo_write64)(void*, u64) = nullptr;

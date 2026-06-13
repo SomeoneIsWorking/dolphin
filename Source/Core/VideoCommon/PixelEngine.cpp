@@ -9,6 +9,7 @@
 #include "Common/ChunkFile.h"
 #include "Common/CommonTypes.h"
 #include "Common/Logging/Log.h"
+#include "Common/SunbrightHooks.h"
 
 #include "Core/ConfigManager.h"
 #include "Core/Core.h"
@@ -228,6 +229,20 @@ void PixelEngineManager::RaiseEvent(int cycles_into_future)
 // THIS IS EXECUTED FROM VIDEO THREAD
 void PixelEngineManager::SetToken(const u16 token, const bool interrupt, int cycles_into_future)
 {
+  // Sunbright hook: loss-free token capture (runtime/pe_token_wrap.cpp). When installed the hook
+  // records the token then calls sb_pe_set_token_impl(this, ...) to run the original body below.
+  if (sb_slot_pe_set_token)
+  {
+    sb_slot_pe_set_token(this, token, interrupt, cycles_into_future);
+    return;
+  }
+  sb_pe_set_token_impl(this, token, interrupt, cycles_into_future);
+}
+
+// Original SetToken body — the member impl the free-function shim forwards to (private access).
+void PixelEngineManager::SetToken_Impl(const u16 token, const bool interrupt,
+                                       int cycles_into_future)
+{
   DEBUG_LOG_FMT(PIXELENGINE, "VIDEO Backend raises INT_CAUSE_PE_TOKEN (btw, token: {:04x})", token);
 
   std::lock_guard lk(m_token_finish_mutex);
@@ -237,6 +252,20 @@ void PixelEngineManager::SetToken(const u16 token, const bool interrupt, int cyc
 
   RaiseEvent(cycles_into_future);
 }
+}  // namespace PixelEngine
+
+// Original Dolphin body, callable directly by the Sunbright hook in place of __real_.
+extern "C" void sb_pe_set_token_impl(void* self, u16 token, bool interrupt, int cycles_into_future)
+{
+  static_cast<PixelEngine::PixelEngineManager*>(self)->SetToken_Impl(token, interrupt,
+                                                                     cycles_into_future);
+}
+
+// Sunbright hook slot (default null = original behavior). Set by sb_install_hooks().
+extern "C" void (*sb_slot_pe_set_token)(void*, u16, bool, int) = nullptr;
+
+namespace PixelEngine
+{
 
 // SetFinish
 // THIS IS EXECUTED FROM VIDEO THREAD (BPStructs.cpp) when a new frame has been drawn
