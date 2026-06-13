@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <bit>
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -56,6 +57,12 @@
 #include "Core/System.h"
 
 #include "VideoCommon/EFBInterface.h"
+
+// SUNBRIGHT: runtime installs a "dump-and-park" callback here so an unresolved hardware read
+// (a real bug — e.g. a misaligned 32-bit MMIO access Dolphin can't route) parks for live
+// probing instead of scrolling past as a warning. Defined here (core owns the storage) so the
+// offline tools that link core but not the runtime still link; null there ⇒ they just warn.
+extern "C" void (*g_sb_unresolved_read_hook)() = nullptr;
 
 namespace PowerPC
 {
@@ -310,6 +317,33 @@ T MMU::ReadFromHardware(u32 em_address)
   if (em_address != 0x10000000 || (m_ppc_state.pc >> 28) != 0)
   {
     PanicAlertFmt("Unable to resolve read address {:x} PC {:x}", em_address, m_ppc_state.pc);
+
+    // SUNBRIGHT: an unresolved hardware read is a real bug (e.g. a misaligned 32-bit MMIO
+    // access Dolphin can't route — like a u32 read of DSP_CONTROL 0xCC00500A). Returning 0
+    // + a scrolling warning hides it. Dump the guest context and call the runtime's park
+    // hook (installed via ::g_sb_unresolved_read_hook) so it can be probed live. The hook is
+    // null in the offline tools (they link core but not the runtime) — they just warn.
+    if (::g_sb_unresolved_read_hook)
+    {
+      static bool reported = false;
+      if (!reported)
+      {
+        reported = true;
+        std::fprintf(stderr,
+            "\n================ SUNBRIGHT: UNRESOLVED HARDWARE READ ================\n"
+            "  ea=%08x  size=%zu  PC=%08x  LR=%08x  SRR0=%08x  SRR1=%08x  SP(r1)=%08x\n"
+            "  r3=%08x r4=%08x r5=%08x r6=%08x r12=%08x\n"
+            "  (parking — curl http://127.0.0.1:17654/cur and /stack?sp=%08x to inspect)\n"
+            "====================================================================\n",
+            em_address, sizeof(T), m_ppc_state.pc, m_ppc_state.spr[SPR_LR],
+            m_ppc_state.spr[SPR_SRR0], m_ppc_state.spr[SPR_SRR1], m_ppc_state.gpr[1],
+            m_ppc_state.gpr[3], m_ppc_state.gpr[4], m_ppc_state.gpr[5], m_ppc_state.gpr[6],
+            m_ppc_state.gpr[12], m_ppc_state.gpr[1]);
+        std::fflush(stderr);
+        ::g_sb_unresolved_read_hook();   // runtime: dump-and-park (does not return)
+      }
+    }
+
     if (m_system.IsPauseOnPanicMode())
     {
       m_system.GetCPU().Break();
