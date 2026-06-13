@@ -91,8 +91,17 @@ const u8* JitBase::Dispatch(JitBase& jit)
   return jit.GetBlockCache()->Dispatch();
 }
 
+// Sunbright JIT-dispatch hook slot (Common/SunbrightHooks.h). Default null = original behavior, so
+// the fork still builds/runs standalone. The runtime points this at its trampoline (jit_hook.cpp,
+// installed by sb_install_hooks): if the block is recompiled it runs our native code and returns
+// true; else it returns false and Dolphin's JIT compiles+runs the block as normal. This replaces
+// the last linker --wrap seam (ld64/macOS cannot do --wrap).
+bool (*sb_slot_jit_trampoline)(void* jit, u32 em_address) = nullptr;
+
 void JitTrampoline(JitBase& jit, u32 em_address)
 {
+  if (sb_slot_jit_trampoline && sb_slot_jit_trampoline(&jit, em_address))
+    return;
   jit.Jit(em_address);
 }
 

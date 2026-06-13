@@ -37,6 +37,12 @@ extern "C" {
 extern void (*sb_slot_pe_set_token)(void* self, u16 token, bool interrupt, int cycles_into_future);
 void sb_pe_set_token_impl(void* self, u16 token, bool interrupt, int cycles_into_future);
 
+// ── JIT dispatch (Core) ──────────────────────────────────────────────────────────────────────
+// JitTrampoline (JitCommon/JitBase.cpp) — the block-dispatch seam. Hook returns true if it ran a
+// recompiled block (skip Dolphin's JIT), false to let Dolphin JIT the block. jit = JitBase*.
+// This is the last former --wrap symbol, now a fork hook so the build works under ld64/macOS too.
+extern bool (*sb_slot_jit_trampoline)(void* jit, u32 em_address);
+
 // ── GPFifo (Core) ────────────────────────────────────────────────────────────────────────────
 // GPFifoManager::Write8/16/32/64 — foreign gather-pipe write funnel (gpfifo_wrap.cpp).
 extern void (*sb_slot_gpfifo_write8)(void* self, u8 v);
