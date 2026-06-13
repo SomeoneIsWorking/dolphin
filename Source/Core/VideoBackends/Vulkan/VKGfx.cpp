@@ -311,7 +311,7 @@ void VKGfx::PresentBackbuffer()
   // End drawing to backbuffer
   StateTracker::GetInstance()->EndRenderPass();
 
-  if (m_swap_chain->IsCurrentImageValid())
+  if (m_swap_chain && m_swap_chain->IsCurrentImageValid())
   {
     // Transition the backbuffer to PRESENT_SRC to ensure all commands drawing
     // to it have finished before present.

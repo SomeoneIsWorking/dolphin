@@ -430,7 +430,10 @@ void OGLGfx::PresentBackbuffer()
     }
   }
 
-  // Swap the back and front buffers, presenting the image.
+  // Swap the back and front buffers, presenting the image. Headless has no surface
+  // to swap; OGL keeps no per-frame resource ring so there is nothing else to cycle.
+  if (m_main_gl_context->IsHeadless())
+    return;
   m_main_gl_context->Swap();
 }
 

@@ -903,7 +903,21 @@ void Presenter::Present(PresentInfo* present_info)
 {
   m_present_count++;
 
-  if (g_gfx->IsHeadless() || (!m_onscreen_ui && !m_xfb_entry))
+  if (g_gfx->IsHeadless())
+  {
+    // Headless skips the swapchain present, but the GPU frame must STILL be cycled
+    // each presented frame so per-frame resources recycle. On Vulkan that recycling
+    // (descriptor-pool reset + command-buffer ring advance) lives in PresentBackbuffer's
+    // advance_to_next_frame path; if it never runs, descriptor pools / command buffers /
+    // the vertex-index stream buffer grow without bound -> VK_ERROR_OUT_OF_DEVICE_MEMORY
+    // after a few minutes (Sunbright: ~2x faster with the 60fps redraw's doubled GX
+    // volume). Each backend's PresentBackbuffer is headless-safe (Vulkan: no swap chain
+    // -> just submit+advance; OGL: skips the buffer Swap).
+    g_gfx->PresentBackbuffer();
+    return;
+  }
+
+  if (!m_onscreen_ui && !m_xfb_entry)
     return;
 
   if (!g_gfx->SupportsUtilityDrawing())
