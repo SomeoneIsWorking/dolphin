@@ -43,6 +43,15 @@ void sb_pe_set_token_impl(void* self, u16 token, bool interrupt, int cycles_into
 // This is the last former --wrap symbol, now a fork hook so the build works under ld64/macOS too.
 extern bool (*sb_slot_jit_trampoline)(void* jit, u32 em_address);
 
+// ── Indexed XF load (VideoCommon, XFStructs.cpp LoadIndexedXF) ─────────────────────────────────
+// The 60fps render-only interpolation seam. When set and it returns true, LoadIndexedXF uses the
+// hook-supplied `out` words (big-endian, guest format) for the XF write INSTEAD of reading guest
+// RAM — letting the runtime substitute interpolated pos-matrices (lerp of the current and previous
+// frame's matrix, read-only) during an in-between replay. Writes only XF/GPU state, never guest RAM.
+//   array  = CPArray (12 = XF_A pos-matrix), base/stride = g_main_cp_state for that array,
+//   index  = the indexed-load index, size = words to produce, out = caller buffer[size].
+extern bool (*sb_slot_xf_indexed)(u32 array, u32 base, u32 stride, u32 index, u32 size, u32* out);
+
 // ── GPFifo (Core) ────────────────────────────────────────────────────────────────────────────
 // GPFifoManager::Write8/16/32/64 — foreign gather-pipe write funnel (gpfifo_wrap.cpp).
 extern void (*sb_slot_gpfifo_write8)(void* self, u8 v);

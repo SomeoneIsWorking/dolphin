@@ -4,10 +4,16 @@
 #include "VideoCommon/XFStructs.h"
 
 #include <bit>
+#include <vector>
 
 #include "Common/CommonTypes.h"
 #include "Common/Logging/Log.h"
+#include "Common/SunbrightHooks.h"
 #include "Common/Swap.h"
+
+// Sunbright 60fps render-only interpolation hook slot (see Common/SunbrightHooks.h). Default null =
+// stock behavior, so the fork still builds/runs standalone.
+bool (*sb_slot_xf_indexed)(u32 array, u32 base, u32 stride, u32 index, u32 size, u32* out) = nullptr;
 
 #include "Core/DolphinAnalytics.h"
 #include "Core/HW/Memmap.h"
@@ -275,6 +281,17 @@ void LoadIndexedXF(CPArray array, u32 index, u16 address, u8 size)
     newData = reinterpret_cast<u32*>(memory.GetPointerForRange(
         g_main_cp_state.array_bases[array] + g_main_cp_state.array_strides[array] * index,
         buf_size));
+    // Sunbright render-only interpolation: let the runtime substitute interpolated pos-matrices
+    // (read from guest RAM, lerped). The result is written only to XF/GPU state below — guest RAM
+    // is never modified. Default-null slot = stock behavior.
+    if (sb_slot_xf_indexed)
+    {
+      static thread_local std::vector<u32> sb_xf_tmp;
+      sb_xf_tmp.resize(size);
+      if (sb_slot_xf_indexed(static_cast<u32>(array), g_main_cp_state.array_bases[array],
+                             g_main_cp_state.array_strides[array], index, size, sb_xf_tmp.data()))
+        newData = sb_xf_tmp.data();
+    }
   }
 
   auto& xf_state_manager = system.GetXFStateManager();
