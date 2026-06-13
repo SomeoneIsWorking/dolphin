@@ -3,6 +3,9 @@
 
 #include "VideoCommon/Present.h"
 
+#include <chrono>
+#include <fmt/format.h>
+
 #include "Common/ChunkFile.h"
 #include "Core/Config/GraphicsSettings.h"
 #include "Core/Config/MainSettings.h"
@@ -17,6 +20,7 @@
 #include "VideoCommon/AbstractGfx.h"
 #include "VideoCommon/FrameDumper.h"
 #include "VideoCommon/FramebufferManager.h"
+#include "VideoCommon/OnScreenDisplay.h"
 #include "VideoCommon/OnScreenUI.h"
 #include "VideoCommon/PostProcessing.h"
 #include "VideoCommon/VertexManagerBase.h"
@@ -169,6 +173,7 @@ bool Presenter::FetchXFB(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_heigh
 // per present, so the probe can see whether two DISTINCT buffers reach the screen each
 // game frame (60fps) or the same one twice (30fps). No readback needed.
 extern "C" { volatile unsigned long g_sb_present_seq = 0; volatile unsigned int g_sb_present_ring[16] = {0}; volatile unsigned char g_sb_present_dup[16] = {0}; }
+extern "C" volatile unsigned long g_sb_game_seq = 0;  // bumped by runtime/overrides/interp_redraw.cpp
 
 void Presenter::ViSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_height, u64 ticks,
                        TimePoint presentation_time)
@@ -179,6 +184,31 @@ void Presenter::ViSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_height,
     g_sb_present_ring[s & 15] = xfb_addr;
     g_sb_present_dup[s & 15] = is_duplicate ? 1 : 0;
     g_sb_present_seq = s + 1;
+
+    // Sunbright: on-screen readout — internal render res, output window res, and FPS.
+    //   Game FPS  = engine logic-frame rate (g_sb_game_seq, bumped per TDisplay::endRendering).
+    //   Output FPS = presents/sec (this counter); with 60fps interpolation it should be ~2× game.
+    static auto t0 = std::chrono::steady_clock::now();
+    static unsigned long p0 = 0, gm0 = 0;
+    static float out_fps = 0.f, game_fps = 0.f;
+    const auto now = std::chrono::steady_clock::now();
+    const double el = std::chrono::duration<double>(now - t0).count();
+    if (el >= 0.5)
+    {
+      out_fps = (float)((s + 1 - p0) / el);
+      game_fps = (float)((g_sb_game_seq - gm0) / el);
+      t0 = now; p0 = s + 1; gm0 = g_sb_game_seq;
+    }
+    if ((s % 20) == 0 && g_framebuffer_manager)
+    {
+      const u32 iw = g_framebuffer_manager->GetEFBWidth();
+      const u32 ih = g_framebuffer_manager->GetEFBHeight();
+      OSD::AddTypedMessage(OSD::MessageType::Typeless,
+                           fmt::format("Render {}x{} -> Window {}x{}   Game {:.0f} fps / Out {:.0f} fps",
+                                       iw, ih, m_backbuffer_width, m_backbuffer_height,
+                                       game_fps, out_fps),
+                           700, OSD::Color::GREEN);
+    }
   }
 
   PresentInfo present_info{
