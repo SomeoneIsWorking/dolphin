@@ -16,6 +16,11 @@
 #include "Core/System.h"
 #include "VideoCommon/CommandProcessor.h"
 
+bool (*g_sb_gpfifo_w8)(void* self, u8 v) = nullptr;
+bool (*g_sb_gpfifo_w16)(void* self, u16 v) = nullptr;
+bool (*g_sb_gpfifo_w32)(void* self, u32 v) = nullptr;
+bool (*g_sb_gpfifo_w64)(void* self, u64 v) = nullptr;
+
 namespace GPFifo
 {
 GPFifoManager::GPFifoManager(Core::System& system) : m_system(system)
@@ -132,24 +137,28 @@ void GPFifoManager::CheckGatherPipe()
 
 void GPFifoManager::Write8(const u8 value)
 {
+  if (g_sb_gpfifo_w8 && g_sb_gpfifo_w8(this, value)) return;
   FastWrite8(value);
   CheckGatherPipe();
 }
 
 void GPFifoManager::Write16(const u16 value)
 {
+  if (g_sb_gpfifo_w16 && g_sb_gpfifo_w16(this, value)) return;
   FastWrite16(value);
   CheckGatherPipe();
 }
 
 void GPFifoManager::Write32(const u32 value)
 {
+  if (g_sb_gpfifo_w32 && g_sb_gpfifo_w32(this, value)) return;
   FastWrite32(value);
   CheckGatherPipe();
 }
 
 void GPFifoManager::Write64(const u64 value)
 {
+  if (g_sb_gpfifo_w64 && g_sb_gpfifo_w64(this, value)) return;
   FastWrite64(value);
   CheckGatherPipe();
 }

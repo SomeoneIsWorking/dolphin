@@ -91,8 +91,12 @@ const u8* JitBase::Dispatch(JitBase& jit)
   return jit.GetBlockCache()->Dispatch();
 }
 
+bool (*g_sb_jit_hook)(JitBase& jit, u32 em_address) = nullptr;
+
 void JitTrampoline(JitBase& jit, u32 em_address)
 {
+  if (g_sb_jit_hook && g_sb_jit_hook(jit, em_address))
+    return;
   jit.Jit(em_address);
 }
 

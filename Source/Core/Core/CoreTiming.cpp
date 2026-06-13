@@ -32,6 +32,10 @@
 #include "VideoCommon/VideoConfig.h"
 #include "VideoCommon/VideoEvents.h"
 
+void (*g_sb_ct_schedule)(void* self, s64 cycles, CoreTiming::EventType* event_type, u64 userdata,
+                         CoreTiming::FromThread from) = nullptr;
+void (*g_sb_ct_remove)(void* self, CoreTiming::EventType* event_type) = nullptr;
+
 namespace CoreTiming
 {
 static constexpr int MAX_SLICE_LENGTH = 20000;
@@ -258,6 +262,8 @@ void CoreTimingManager::ClearPendingEvents()
 void CoreTimingManager::ScheduleEvent(s64 cycles_into_future, EventType* event_type, u64 userdata,
                                       FromThread from)
 {
+  if (g_sb_ct_schedule)
+    g_sb_ct_schedule(this, cycles_into_future, event_type, userdata, from);
   ASSERT_MSG(POWERPC, event_type, "Event type is nullptr, will crash now.");
 
   bool from_cpu_thread;
@@ -301,6 +307,8 @@ void CoreTimingManager::ScheduleEvent(s64 cycles_into_future, EventType* event_t
 
 void CoreTimingManager::RemoveEvent(EventType* event_type)
 {
+  if (g_sb_ct_remove)
+    g_sb_ct_remove(this, event_type);
   const size_t erased =
       std::erase_if(m_event_queue, [&](const Event& e) { return e.type == event_type; });
 

@@ -40,6 +40,10 @@
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/System.h"
 
+bool (*g_sb_dsp_gen_intr)(void* self, u64* dsp_int_type, s64 cycles_late) = nullptr;
+bool (*g_sb_dspemu_intr)(void* self, int type, int cycles) = nullptr;
+void (*g_sb_update_audio_dma)(void* self) = nullptr;
+
 namespace DSP
 {
 // register offsets
@@ -386,11 +390,16 @@ void DSPManager::GlobalGenerateDSPInterrupt(Core::System& system, u64 DSPIntType
   system.GetDSP().GenerateDSPInterrupt(DSPIntType, cyclesLate);
 }
 
+void DSPManager::RaiseInterruptBits(u64 DSPIntType, s64 cyclesLate)
+{
+  m_dsp_control.Hex |= (DSPIntType & (INT_DSP | INT_ARAM | INT_AID));
+  UpdateInterrupts();
+}
+
 void DSPManager::GenerateDSPInterrupt(u64 DSPIntType, s64 cyclesLate)
 {
-  // The INT_* enumeration members have values that reflect their bit positions in
-  // DSP_CONTROL - we mask by (INT_DSP | INT_ARAM | INT_AID) just to ensure people
-  // don't call this with bogus values.
+  if (g_sb_dsp_gen_intr && !g_sb_dsp_gen_intr(this, &DSPIntType, cyclesLate))
+    return;
   m_dsp_control.Hex |= (DSPIntType & (INT_DSP | INT_ARAM | INT_AID));
   UpdateInterrupts();
 }
@@ -398,6 +407,8 @@ void DSPManager::GenerateDSPInterrupt(u64 DSPIntType, s64 cyclesLate)
 // CALLED FROM DSP EMULATOR, POSSIBLY THREADED
 void DSPManager::GenerateDSPInterruptFromDSPEmu(DSPInterruptType type, int cycles_into_future)
 {
+  if (g_sb_dspemu_intr && g_sb_dspemu_intr(this, static_cast<int>(type), cycles_into_future))
+    return;
   auto& core_timing = m_system.GetCoreTiming();
   core_timing.ScheduleEvent(cycles_into_future, m_event_type_generate_dsp_interrupt, type,
                             CoreTiming::FromThread::ANY);
@@ -451,6 +462,8 @@ void DSPManager::UpdateAudioDMA()
   {
     AudioCommon::SendAIBuffer(m_system, &zero_samples[0], 8);
   }
+  if (g_sb_update_audio_dma)
+    g_sb_update_audio_dma(this);
 }
 
 void DSPManager::Do_ARAM_DMA()

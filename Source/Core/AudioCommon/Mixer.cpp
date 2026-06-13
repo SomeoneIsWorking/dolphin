@@ -161,6 +161,8 @@ void Mixer::MixerFifo::Mix(s16* samples, std::size_t num_samples)
   }
 }
 
+void (*g_sb_mix_out)(void* self, s16* samples, std::size_t n, std::size_t result) = nullptr;
+
 std::size_t Mixer::Mix(s16* samples, std::size_t num_samples)
 {
   if (!samples)
@@ -178,6 +180,9 @@ std::size_t Mixer::Mix(s16* samples, std::size_t num_samples)
   m_skylander_portal_mixer.Mix(samples, num_samples);
   for (auto& mixer : m_gba_mixers)
     mixer.Mix(samples, num_samples);
+
+  if (g_sb_mix_out)
+    g_sb_mix_out(this, samples, num_samples, num_samples);
 
   return num_samples;
 }
@@ -213,8 +218,16 @@ std::size_t Mixer::MixSurround(float* samples, std::size_t num_samples)
   return num_samples;
 }
 
+void (*g_sb_push_dsp)(const s16* samples, std::size_t n) = nullptr;
+void (*g_sb_push_dtk)(const s16* samples, std::size_t n) = nullptr;
+void (*g_sb_dsp_rate)(u32 divisor) = nullptr;
+void (*g_sb_dtk_rate)(u32 divisor) = nullptr;
+void (*g_sb_dtk_vol)(u32 lvolume, u32 rvolume) = nullptr;
+
 void Mixer::PushSamples(const s16* samples, std::size_t num_samples)
 {
+  if (g_sb_push_dsp)
+    g_sb_push_dsp(samples, num_samples);
   if (IsOutputSampleRateValid())
   {
     // Big-endian RL-orderered stereo samples.
@@ -238,6 +251,8 @@ void Mixer::PushSamples(const s16* samples, std::size_t num_samples)
 
 void Mixer::PushStreamingSamples(const s16* samples, std::size_t num_samples)
 {
+  if (g_sb_push_dtk)
+    g_sb_push_dtk(samples, num_samples);
   if (IsOutputSampleRateValid())
   {
     // Big-endian RL-orderered stereo samples.
@@ -319,11 +334,15 @@ void Mixer::PushGBASamples(std::size_t device_number, const s16* samples, std::s
 
 void Mixer::SetDMAInputSampleRateDivisor(u32 rate_divisor)
 {
+  if (g_sb_dsp_rate)
+    g_sb_dsp_rate(rate_divisor);
   m_dma_mixer.SetInputSampleRateDivisor(rate_divisor);
 }
 
 void Mixer::SetStreamInputSampleRateDivisor(u32 rate_divisor)
 {
+  if (g_sb_dtk_rate)
+    g_sb_dtk_rate(rate_divisor);
   m_streaming_mixer.SetInputSampleRateDivisor(rate_divisor);
 }
 
@@ -334,6 +353,8 @@ void Mixer::SetGBAInputSampleRate(std::size_t device_number, u32 sample_rate)
 
 void Mixer::SetStreamingVolume(u32 lvolume, u32 rvolume)
 {
+  if (g_sb_dtk_vol)
+    g_sb_dtk_vol(lvolume, rvolume);
   m_streaming_mixer.SetVolume(std::clamp<u32>(lvolume, 0x00, 0xff),
                               std::clamp<u32>(rvolume, 0x00, 0xff));
 }

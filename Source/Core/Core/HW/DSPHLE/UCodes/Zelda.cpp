@@ -20,6 +20,8 @@
 #include "Core/HW/Memmap.h"
 #include "Core/System.h"
 
+void (*g_sb_fetch_vpb)(void* self, u16 voice_id, void* vpb) = nullptr;
+
 namespace DSP::HLE
 {
 // Uncomment this to have a strict version of the HLE implementation, which
@@ -1445,6 +1447,9 @@ void ZeldaAudioRenderer::FetchVPB(u16 voice_id, VPB* vpb)
 
   if (m_flags & TINY_VPB)
     vpb->Uncompress();
+
+  if (g_sb_fetch_vpb)
+    g_sb_fetch_vpb(this, voice_id, vpb);
 }
 
 void ZeldaAudioRenderer::StoreVPB(u16 voice_id, VPB* vpb)
