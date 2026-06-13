@@ -165,10 +165,21 @@ bool Presenter::FetchXFB(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_heigh
   return old_xfb_id == m_last_xfb_id;
 }
 
+// Sunbright interp60 diagnostic: record the actual presented XFB address + duplicate flag
+// per present, so the probe can see whether two DISTINCT buffers reach the screen each
+// game frame (60fps) or the same one twice (30fps). No readback needed.
+extern "C" { volatile unsigned long g_sb_present_seq = 0; volatile unsigned int g_sb_present_ring[16] = {0}; volatile unsigned char g_sb_present_dup[16] = {0}; }
+
 void Presenter::ViSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_height, u64 ticks,
                        TimePoint presentation_time)
 {
   bool is_duplicate = FetchXFB(xfb_addr, fb_width, fb_stride, fb_height, ticks);
+  {
+    unsigned long s = g_sb_present_seq;
+    g_sb_present_ring[s & 15] = xfb_addr;
+    g_sb_present_dup[s & 15] = is_duplicate ? 1 : 0;
+    g_sb_present_seq = s + 1;
+  }
 
   PresentInfo present_info{
       .present_count = m_present_count++,
