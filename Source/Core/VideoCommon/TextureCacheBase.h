@@ -143,6 +143,10 @@ struct TCacheEntry
   // Indicates that this TCacheEntry has been invalided from m_textures_by_address
   bool invalidated = false;
 
+  // Sunbright interp60: this entry is an in-between OWNED per-field EFB texture (m_sb_efb_own).
+  // Used to detect if a real frame ever reuses one (the leak that would lag real frames).
+  bool sb_owned = false;
+
   bool reference_changed = false;  // used by xfb to determine when a reference xfb changed
 
   // Texture dimensions from the GameCube's point of view
@@ -276,6 +280,12 @@ public:
   void Cleanup(int _frameCount);
 
   void Invalidate();
+
+  // Sunbright interp60: drop the per-stage bound-texture reuse cache + TMEM cache so the next draw
+  // re-binds fresh. Called at the in-between boundary so the in-between's owned-EFB texture bind
+  // does not leak into the next real frame's Load() (which would make the real frame sample the
+  // in-between's N-1/2 readback = lag). Does NOT touch m_textures_by_address (cheap).
+  void SbResetBinds();
   void ReleaseToPool(TCacheEntry* entry);
 
   TCacheEntry* Load(u32 stage);

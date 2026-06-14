@@ -452,3 +452,19 @@ void SetInterlacingMode(const BPCmd& bp)
   }
 }
 }  // namespace BPFunctions
+
+// Sunbright interp60: clear the EFB to the SMS frame-clear (black color+alpha, far Z) so the GAME's
+// next frame renders on a clean EFB. The interp's two-copy present (real + in-between) otherwise
+// leaves the previous in-between's geometry residue in the EFB, which the game then draws the next
+// real frame on top of -> the doubled tower / lagged water reflection on REAL frames (the in-between
+// is clean because the real present's copy clears before the replay draws). Owns the EFB clear
+// lifecycle that the two-present interp broke.
+extern "C" void sb_clear_efb()
+{
+  if (!g_framebuffer_manager)
+    return;
+  const MathUtil::Rectangle<int> rc(0, 0, static_cast<int>(EFB_WIDTH), static_cast<int>(EFB_HEIGHT));
+  g_framebuffer_manager->ClearEFB(rc, /*color*/ true, /*alpha*/ true, /*z*/ true,
+                                  /*color*/ 0x00000000u, /*z*/ 0x00FFFFFFu,
+                                  bpmem.zcontrol.pixel_format);
+}
