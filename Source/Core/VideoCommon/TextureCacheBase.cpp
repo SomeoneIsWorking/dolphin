@@ -97,6 +97,8 @@ extern "C" volatile unsigned long g_sb_efb_redirects;
 extern "C" volatile unsigned long g_sb_efb_owned_hits = 0;   // in-between samples that hit an owned tex
 extern "C" volatile unsigned long g_sb_efb_owned_miss = 0;   // in-between samples with NO owned tex (fell through)
 extern "C" volatile unsigned long g_sb_efb_inbetween_ramwrite = 0;  // in-between copies that fell through to RAM
+extern "C" volatile unsigned long g_sb_efb_resets = 0;             // SbResetBinds calls
+extern "C" volatile unsigned long g_sb_efb_real_reused_owned = 0;  // REAL frame Load reused an owned tex (the leak)
 
 TextureCacheBase::TextureCacheBase()
 {
@@ -151,6 +153,23 @@ void TextureCacheBase::Invalidate()
   m_sb_efb_own.clear();   // Sunbright interp60: release the owned per-field EFB textures too
 
   m_texture_pool.clear();
+}
+
+// Sunbright interp60: see the header. Forces the next Load() per stage to re-bind instead of
+// reusing m_bound_textures (Load() short-circuits on TMEM::IsCached / unchanged hash), so the
+// in-between's owned-EFB texture bind never leaks into the real frame.
+void TextureCacheBase::SbResetBinds()
+{
+  g_sb_efb_resets++;
+  for (auto& bind : m_bound_textures)
+    bind.reset();
+  TMEM::InvalidateAll();
+}
+
+extern "C" void sb_efb_reset_binds()
+{
+  if (g_texture_cache)
+    g_texture_cache->SbResetBinds();
 }
 
 void TextureCacheBase::OnConfigChanged(const VideoConfig& config)
@@ -1272,6 +1291,7 @@ TCacheEntry* TextureCacheBase::LoadImpl(u32 stage, bool force_reload)
     // in it's bloom effect, which breaks without giving it the invalidated texture.
     if (TMEM::IsCached(stage))
     {
+      if (!g_sb_efb_redirect_inbetween && entry->sb_owned) g_sb_efb_real_reused_owned++;
       return entry;
     }
 
@@ -1279,6 +1299,7 @@ TCacheEntry* TextureCacheBase::LoadImpl(u32 stage, bool force_reload)
     // FIXME: this doesn't correctly handle textures from tmem.
     if (!entry->invalidated && entry->base_hash == entry->CalculateHash())
     {
+      if (!g_sb_efb_redirect_inbetween && entry->sb_owned) g_sb_efb_real_reused_owned++;
       return entry;
     }
   }
@@ -2343,6 +2364,7 @@ void TextureCacheBase::CopyRenderTargetToTexture(
       oe->SetEfbCopy(dstStride);
       oe->may_have_overlapping_textures = false;
       oe->is_custom_tex = false;
+      oe->sb_owned = true;
       CopyEFBToCacheEntry(oe, is_depth_copy, srcRect, scaleByHalf, linear_filter, dstFormat,
                           isIntensity, gamma, clamp_top, clamp_bottom,
                           GetVRAMCopyFilterCoefficients(filter_coefficients));
