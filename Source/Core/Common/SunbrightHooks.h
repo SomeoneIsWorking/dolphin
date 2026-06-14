@@ -52,6 +52,18 @@ extern bool (*sb_slot_jit_trampoline)(void* jit, u32 em_address);
 //   index  = the indexed-load index, size = words to produce, out = caller buffer[size].
 extern bool (*sb_slot_xf_indexed)(u32 array, u32 base, u32 stride, u32 index, u32 size, u32* out);
 
+// ── Direct XF-register matrix write (VideoCommon, XFStructs.cpp LoadXFReg XF-mem branch) ───────
+// The companion to sb_slot_xf_indexed for the 60fps replay. Banners, smoke, projected shadows and
+// the water screen-space refraction projection set their transforms via DIRECT LoadXFReg writes to
+// XF matrix memory (not indexed arrays), so the indexed seam never sees them — on the in-between
+// they stay at tick N while the geometry interpolates, the "swim"/jitter. This seam lets the
+// runtime record each frame's direct matrix-memory writes and substitute interpolated ones on the
+// in-between replay. data_be = the incoming transfer_size big-endian words; on a true return the
+// hook has filled out_be[transfer_size] with substituted big-endian words. Writes only XF/GPU
+// state, never guest RAM. xf_mem_addr is the XF-memory word offset (< XFMEM_REGISTERS_START).
+// Default null = stock behavior.
+extern bool (*sb_slot_xf_reg)(u32 xf_mem_addr, u32 transfer_size, const u8* data_be, u32* out_be);
+
 // ── 60fps verification capture (VideoCommon, Present.cpp ViSwap) ───────────────────────────────
 // When sb_capture_frames > 0, each UNIQUE present reads its XFB back to CPU (RGBA8) and calls this
 // hook tagged with the XFB address (real frame vs the in-between's alt = real ^ 0x400000), then

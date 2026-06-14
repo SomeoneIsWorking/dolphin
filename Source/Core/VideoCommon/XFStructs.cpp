@@ -14,6 +14,7 @@
 // Sunbright 60fps render-only interpolation hook slot (see Common/SunbrightHooks.h). Default null =
 // stock behavior, so the fork still builds/runs standalone.
 bool (*sb_slot_xf_indexed)(u32 array, u32 base, u32 stride, u32 index, u32 size, u32* out) = nullptr;
+bool (*sb_slot_xf_reg)(u32 xf_mem_addr, u32 transfer_size, const u8* data_be, u32* out_be) = nullptr;
 
 #include "Core/DolphinAnalytics.h"
 #include "Core/HW/Memmap.h"
@@ -239,9 +240,23 @@ void LoadXFReg(u16 base_address, u8 transfer_size, const u8* data)
     }
 
     XFMemWritten(xf_state_manager, xf_mem_transfer_size, xf_mem_base);
+    // Sunbright direct-XF interpolation seam (60fps replay): record/substitute matrix-memory writes
+    // so direct-transform effects (water screen-space projection, banners, smoke, projected shadows)
+    // interpolate on the in-between instead of snapping to tick N. Reads from `rd` (substituted big-
+    // endian words) but still advances `data` so the XF-register branch below stays correct. Writes
+    // only XF/GPU state, never guest RAM. Default-null slot = stock behavior.
+    const u8* rd = data;
+    if (sb_slot_xf_reg)
+    {
+      static thread_local std::vector<u32> sb_xfreg_tmp;
+      sb_xfreg_tmp.resize(xf_mem_transfer_size);
+      if (sb_slot_xf_reg(xf_mem_base, xf_mem_transfer_size, data, sb_xfreg_tmp.data()))
+        rd = reinterpret_cast<const u8*>(sb_xfreg_tmp.data());
+    }
     for (u32 i = 0; i < xf_mem_transfer_size; i++)
     {
-      ((u32*)&xfmem)[xf_mem_base + i] = Common::swap32(data);
+      ((u32*)&xfmem)[xf_mem_base + i] = Common::swap32(rd);
+      rd += 4;
       data += 4;
     }
   }
