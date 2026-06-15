@@ -190,6 +190,29 @@ void (*sb_slot_frame_captured)(unsigned xfb_addr, const unsigned char* rgba, int
                                int stride) = nullptr;
 }
 
+// Sunbright N7 NATIVE PRESENT. When g_sb_ngx_present != 0 the native ngx renderer
+// (runtime/render/ngx_present.cpp) renders the captured J3D scene into its own Dolphin
+// AbstractTexture and we substitute it for the XFB texture at the present + frame-dump
+// consumption sites — so the on-screen frame (and the headless dump) is the native
+// render, not Dolphin's GX output. The callback runs ON THIS (video) thread and returns
+// a texture sized to the source rect (or null → keep the real XFB).
+extern "C" {
+volatile int g_sb_ngx_present = 0;
+const void* (*sb_ngx_present_xfb_cb)(int, int) = nullptr;
+}
+static const AbstractTexture* SbNgxPresentSubstitute(const AbstractTexture* real,
+                                                     MathUtil::Rectangle<int>* src_rect)
+{
+  if (!g_sb_ngx_present || !sb_ngx_present_xfb_cb || !real)
+    return real;
+  const int w = src_rect->GetWidth(), h = src_rect->GetHeight();
+  const void* t = sb_ngx_present_xfb_cb(w, h);
+  if (!t)
+    return real;
+  *src_rect = MathUtil::Rectangle<int>(0, 0, w, h);
+  return static_cast<const AbstractTexture*>(t);
+}
+
 // Sunbright 60fps OWNED PRESENT (interp60). When g_sb_own_present != 0 the runtime drives the
 // scan-out itself: VideoInterface.cpp's OutputField does NOT auto-present (it only stashes the
 // live XFB dims into g_sb_owned_*), and the runtime calls sb_present_xfb(addr) once per frame it
@@ -461,7 +484,10 @@ void Presenter::ProcessFrameDumping(u64 ticks) const
 
     // TODO: any scaling done by this won't be gamma corrected,
     // we should either apply post processing as well, or port its gamma correction code
-    g_frame_dumper->DumpCurrentFrame(m_xfb_entry->texture.get(), m_xfb_rect, target_rect, ticks,
+    const AbstractTexture* dump_tex = m_xfb_entry->texture.get();
+    MathUtil::Rectangle<int> dump_src = m_xfb_rect;
+    dump_tex = SbNgxPresentSubstitute(dump_tex, &dump_src);
+    g_frame_dumper->DumpCurrentFrame(dump_tex, dump_src, target_rect, ticks,
                                      m_frame_count);
   }
 }
@@ -1098,9 +1124,10 @@ void Presenter::Present(PresentInfo* present_info)
     // Adjust the source rectangle instead of using an oversized viewport to render the XFB.
     MathUtil::Rectangle<int> render_target_rc = GetTargetRectangle();
     MathUtil::Rectangle<int> render_source_rc = AdjustForCustomCrop(m_xfb_rect);
+    const AbstractTexture* xfb_tex = SbNgxPresentSubstitute(m_xfb_entry->texture.get(), &render_source_rc);
     AdjustRectanglesToFitBounds(&render_target_rc, &render_source_rc, m_backbuffer_width,
                                 m_backbuffer_height);
-    RenderXFBToScreen(render_target_rc, m_xfb_entry->texture.get(), render_source_rc);
+    RenderXFBToScreen(render_target_rc, xfb_tex, render_source_rc);
   }
 
   if (m_onscreen_ui)
