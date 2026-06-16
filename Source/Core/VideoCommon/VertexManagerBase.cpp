@@ -345,6 +345,16 @@ void VertexManagerBase::CommitBuffer(u32 num_vertices, u32 vertex_stride, u32 nu
   *out_base_index = 0;
 }
 
+// Sunbright: count the ACTUAL draws Dolphin issues (GPU thread) so the ngx native renderer can
+// check it isn't dropping geometry (black water/sky = missing draws). Cumulative; ngx compares
+// against its own captured totals. is_perspective lets ngx compare only 3D draws (skip HUD ortho).
+static unsigned long sb_gx_draws = 0, sb_gx_indices = 0, sb_gx_persp_draws = 0, sb_gx_persp_indices = 0;
+extern "C" void sb_get_gx_draw_counts(unsigned long* draws, unsigned long* indices,
+                                      unsigned long* pdraws, unsigned long* pindices) {
+  if (draws) *draws = sb_gx_draws; if (indices) *indices = sb_gx_indices;
+  if (pdraws) *pdraws = sb_gx_persp_draws; if (pindices) *pindices = sb_gx_persp_indices;
+}
+
 void VertexManagerBase::DrawCurrentBatch(u32 base_index, u32 num_indices, u32 base_vertex)
 {
   // If bounding box is enabled, we need to flush any changes first, then invalidate what we have.
@@ -352,6 +362,9 @@ void VertexManagerBase::DrawCurrentBatch(u32 base_index, u32 num_indices, u32 ba
   {
     g_bounding_box->Flush();
   }
+
+  sb_gx_draws++; sb_gx_indices += num_indices;
+  if (xfmem.projection.type == ProjectionType::Perspective) { sb_gx_persp_draws++; sb_gx_persp_indices += num_indices; }
 
   g_gfx->DrawIndexed(base_index, num_indices, base_vertex);
 }
