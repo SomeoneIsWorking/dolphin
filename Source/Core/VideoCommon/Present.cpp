@@ -4,6 +4,8 @@
 #include "VideoCommon/Present.h"
 
 #include <chrono>
+#include <cstdio>
+#include <vector>
 #include <fmt/format.h>
 
 #include "Common/ChunkFile.h"
@@ -211,6 +213,40 @@ static const AbstractTexture* SbNgxPresentSubstitute(const AbstractTexture* real
     return real;
   *src_rect = MathUtil::Rectangle<int>(0, 0, w, h);
   return static_cast<const AbstractTexture*>(t);
+}
+
+// Sunbright ZERO-DRIFT A/B capture. When armed (g_sb_ab_capture != 0, set by the probe
+// /abshot2 endpoint) the present writes BOTH the Dolphin GX XFB and the native ngx texture
+// for the SAME present to PPM, then disarms — a perfectly camera-aligned A/B with no
+// temporal/process drift (the toggle-based /abshot drifts during dynamic scenes). PPM (P6)
+// is read directly by tools/gp (PIL). Files: scratch/screenshots/ab2.{gx,ngx}.ppm.
+extern "C" { volatile int g_sb_ab_capture = 0; }
+static void SbWritePPM(const char* path, const AbstractTexture* tex, const MathUtil::Rectangle<int>& rect)
+{
+  if (!tex || !g_gfx) return;
+  const u32 w = static_cast<u32>(rect.GetWidth()), h = static_cast<u32>(rect.GetHeight());
+  if (!w || !h) return;
+  auto rb = g_gfx->CreateStagingTexture(
+      StagingTextureType::Readback,
+      TextureConfig(w, h, 1, 1, 1, AbstractTextureFormat::RGBA8, 0, AbstractTextureType::Texture_2DArray));
+  if (!rb) return;
+  rb->CopyFromTexture(tex, rect, 0, 0, rb->GetRect());
+  rb->Flush();
+  if (!rb->Map()) return;
+  const unsigned char* base = reinterpret_cast<const unsigned char*>(rb->GetMappedPointer());
+  const u32 stride = static_cast<u32>(rb->GetMappedStride());
+  FILE* f = std::fopen(path, "wb");
+  if (f) {
+    std::fprintf(f, "P6\n%u %u\n255\n", w, h);
+    std::vector<unsigned char> row(w * 3);
+    for (u32 y = 0; y < h; y++) {
+      const unsigned char* s = base + (size_t)y * stride;
+      for (u32 x = 0; x < w; x++) { row[x*3+0]=s[x*4+0]; row[x*3+1]=s[x*4+1]; row[x*3+2]=s[x*4+2]; }
+      std::fwrite(row.data(), 1, row.size(), f);
+    }
+    std::fclose(f);
+  }
+  rb->Unmap();
 }
 
 // Sunbright 60fps OWNED PRESENT (interp60). When g_sb_own_present != 0 the runtime drives the
@@ -426,6 +462,26 @@ void Presenter::SetNextSwapEstimatedTime(u64 ticks, TimePoint host_time)
 
 void Presenter::ProcessFrameDumping(u64 ticks) const
 {
+  // Sunbright zero-drift A/B: dump the Dolphin GX XFB and the native ngx texture for THIS
+  // present (armed by /abshot2). Both come from the same present → camera-aligned.
+  if (g_sb_ab_capture && m_xfb_entry)
+  {
+    // gx = Dolphin's GX render of THIS frame (LIVE when g_sb_ngx_present==0). ngx = the native
+    // renderer's texture rendered on demand for the SAME frame (call the cb directly, regardless
+    // of present mode). Both from one present → zero drift, with a LIVE Dolphin oracle.
+    const MathUtil::Rectangle<int> gx_rect = m_xfb_rect;
+    SbWritePPM("scratch/screenshots/ab2.gx.ppm", m_xfb_entry->texture.get(), gx_rect);
+    if (sb_ngx_present_xfb_cb)
+    {
+      const int w = gx_rect.GetWidth(), h = gx_rect.GetHeight();
+      const void* t = sb_ngx_present_xfb_cb(w, h);
+      if (t)
+        SbWritePPM("scratch/screenshots/ab2.ngx.ppm", static_cast<const AbstractTexture*>(t),
+                   MathUtil::Rectangle<int>(0, 0, w, h));
+    }
+    g_sb_ab_capture = 0;
+  }
+
   if (g_frame_dumper->IsFrameDumping() && m_xfb_entry)
   {
     MathUtil::Rectangle<int> target_rect;
