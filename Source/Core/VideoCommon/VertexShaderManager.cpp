@@ -26,6 +26,31 @@
 #include "VideoCommon/XFMemory.h"
 #include "VideoCommon/XFStateManager.h"
 
+// Sunbright: authoritative projection capture (GPU thread). The ngx native renderer reads
+// this to compare against its own g_proj — the only valid oracle (CPU-side xfmem is lagged).
+namespace {
+std::array<float, 16> sb_dolphin_proj{};
+std::array<float, 16> sb_dolphin_persp{};   // last PERSPECTIVE (type 0) — the stable 3D camera,
+                                            // set once/frame so it IS comparable across the async gap
+int sb_dolphin_proj_type = -1;
+unsigned long sb_dolphin_proj_count = 0, sb_dolphin_persp_count = 0;
+}  // namespace
+extern "C" void sb_publish_dolphin_proj(const float* m16, int type) {
+  for (int i = 0; i < 16; i++) sb_dolphin_proj[i] = m16[i];
+  sb_dolphin_proj_type = type;
+  sb_dolphin_proj_count++;
+  if (type == 0) { for (int i = 0; i < 16; i++) sb_dolphin_persp[i] = m16[i]; sb_dolphin_persp_count++; }
+}
+extern "C" const float* sb_get_dolphin_proj(int* type, unsigned long* count) {
+  if (type) *type = sb_dolphin_proj_type;
+  if (count) *count = sb_dolphin_proj_count;
+  return sb_dolphin_proj.data();
+}
+extern "C" const float* sb_get_dolphin_persp(unsigned long* count) {
+  if (count) *count = sb_dolphin_persp_count;
+  return sb_dolphin_persp.data();
+}
+
 void VertexShaderManager::Init()
 {
   // Initialize state tracking variables
@@ -108,6 +133,11 @@ Common::Matrix44 VertexShaderManager::LoadProjectionMatrix()
 
   PRIM_LOG("Projection: {} {} {} {} {} {}", rawProjection[0], rawProjection[1], rawProjection[2],
            rawProjection[3], rawProjection[4], rawProjection[5]);
+
+  // Sunbright: publish the ACTUAL projection Dolphin renders with (incl. the widescreen/
+  // aspect hack), captured on the GPU thread where it is authoritative — the only valid
+  // oracle for ngx's projection (CPU-side xfmem is async-lagged). Read via sb_get_dolphin_proj.
+  sb_publish_dolphin_proj(m_projection_matrix.data(), (int)xfmem.projection.type);
 
   auto corrected_matrix = Common::Matrix44::FromArray(m_projection_matrix);
 
