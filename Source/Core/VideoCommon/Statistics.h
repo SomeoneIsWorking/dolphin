@@ -3,6 +3,11 @@
 
 #pragma once
 
+// Sunbright: enable per-frame draw/primitive statistics so we can enumerate the GX
+// render passes Dolphin makes and compare against the native (ngx) capture to find
+// missing/extra geometry. INCSTAT is otherwise a no-op in release.
+#define STATISTICS 1
+
 #include <array>
 #include <vector>
 

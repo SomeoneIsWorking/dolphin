@@ -1,6 +1,7 @@
 // Copyright 2008 Dolphin Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
 #include "VideoCommon/PixelShaderGen.h"
 
 #include "Common/Assert.h"
@@ -994,6 +995,15 @@ ShaderCode GeneratePixelShaderCode(APIType api_type, const ShaderHostConfig& hos
   out.Write("\tDolphinFragmentOutput frag_output;\n");
   out.Write("\tprocess_fragment(frag_input, frag_output);\n");
   out.Write("\tivec4 prev = frag_output.main & 255;\n");
+
+  // SUNBRIGHT ground-truth debug: when SUNBRIGHT_DBG_RASCOLOR is set, output the rasterized
+  // channel-0 colour (GX's lit per-vertex col0 / illum) directly, bypassing the TEV combiner.
+  // Lets a recomp-GX run visualise GX's true col0 to A/B against the ngx native renderer.
+  if (getenv("SUNBRIGHT_DBG_RASCOLOR"))
+    out.Write("\tprev = iround(clamp(colors_0, 0.0, 1.0) * 255.0);\n");
+  // SUNBRIGHT debug: output GX's raw last texture sample (compare vs ngx NGX_TEVDBG=tex).
+  if (getenv("SUNBRIGHT_DBG_TEXCOLOR"))
+    out.Write("\tprev = frag_output.last_texture & 255;\n");
 
   // NOTE: Fragment may not be discarded if alpha test always fails and early depth test is enabled
   // (in this case we need to write a depth value if depth test passes regardless of the alpha
