@@ -221,32 +221,54 @@ static const AbstractTexture* SbNgxPresentSubstitute(const AbstractTexture* real
 // temporal/process drift (the toggle-based /abshot drifts during dynamic scenes). PPM (P6)
 // is read directly by tools/gp (PIL). Files: scratch/screenshots/ab2.{gx,ngx}.ppm.
 extern "C" { volatile int g_sb_ab_capture = 0; }
-static void SbWritePPM(const char* path, const AbstractTexture* tex, const MathUtil::Rectangle<int>& rect)
+
+// Sunbright FROZEN ORACLE: when /ngxfreeze latches ngx's snapshot, the live Dolphin GX XFB keeps
+// moving, so an abshot2 gx-vs-ngx would be misaligned (gx at a later camera). g_sb_freeze_gx, set
+// by the runtime when freeze turns on, makes the NEXT present serialize the GX XFB into a held PPM
+// buffer; while frozen, abshot2 serves THAT held oracle for the gx side (ngx re-renders the frozen
+// snapshot). Result: a static, ALIGNED gx-vs-ngx A/B I can toggle layers against (~1 frame skew).
+extern "C" { volatile int g_sb_freeze_gx = 0; }   // 1 = capture-pending, 2 = captured & held
+static std::vector<unsigned char> g_frozen_gx_ppm;
+static u32 g_frozen_gx_w = 0, g_frozen_gx_h = 0;
+
+// Serialize a texture's RGB into PPM-body bytes (no header). Returns false on failure.
+static bool SbReadTexRGB(const AbstractTexture* tex, const MathUtil::Rectangle<int>& rect,
+                         std::vector<unsigned char>& out, u32& ow, u32& oh)
 {
-  if (!tex || !g_gfx) return;
+  if (!tex || !g_gfx) return false;
   const u32 w = static_cast<u32>(rect.GetWidth()), h = static_cast<u32>(rect.GetHeight());
-  if (!w || !h) return;
+  if (!w || !h) return false;
   auto rb = g_gfx->CreateStagingTexture(
       StagingTextureType::Readback,
       TextureConfig(w, h, 1, 1, 1, AbstractTextureFormat::RGBA8, 0, AbstractTextureType::Texture_2DArray));
-  if (!rb) return;
+  if (!rb) return false;
   rb->CopyFromTexture(tex, rect, 0, 0, rb->GetRect());
   rb->Flush();
-  if (!rb->Map()) return;
+  if (!rb->Map()) return false;
   const unsigned char* base = reinterpret_cast<const unsigned char*>(rb->GetMappedPointer());
   const u32 stride = static_cast<u32>(rb->GetMappedStride());
-  FILE* f = std::fopen(path, "wb");
-  if (f) {
-    std::fprintf(f, "P6\n%u %u\n255\n", w, h);
-    std::vector<unsigned char> row(w * 3);
-    for (u32 y = 0; y < h; y++) {
-      const unsigned char* s = base + (size_t)y * stride;
-      for (u32 x = 0; x < w; x++) { row[x*3+0]=s[x*4+0]; row[x*3+1]=s[x*4+1]; row[x*3+2]=s[x*4+2]; }
-      std::fwrite(row.data(), 1, row.size(), f);
-    }
-    std::fclose(f);
+  out.resize((size_t)w * h * 3);
+  for (u32 y = 0; y < h; y++) {
+    const unsigned char* s = base + (size_t)y * stride;
+    unsigned char* d = out.data() + (size_t)y * w * 3;
+    for (u32 x = 0; x < w; x++) { d[x*3+0]=s[x*4+0]; d[x*3+1]=s[x*4+1]; d[x*3+2]=s[x*4+2]; }
   }
   rb->Unmap();
+  ow = w; oh = h; return true;
+}
+static void SbWritePPMBytes(const char* path, const std::vector<unsigned char>& rgb, u32 w, u32 h)
+{
+  if (rgb.empty() || !w || !h) return;
+  FILE* f = std::fopen(path, "wb");
+  if (!f) return;
+  std::fprintf(f, "P6\n%u %u\n255\n", w, h);
+  std::fwrite(rgb.data(), 1, rgb.size(), f);
+  std::fclose(f);
+}
+static void SbWritePPM(const char* path, const AbstractTexture* tex, const MathUtil::Rectangle<int>& rect)
+{
+  std::vector<unsigned char> rgb; u32 w = 0, h = 0;
+  if (SbReadTexRGB(tex, rect, rgb, w, h)) SbWritePPMBytes(path, rgb, w, h);
 }
 
 // Sunbright 60fps OWNED PRESENT (interp60). When g_sb_own_present != 0 the runtime drives the
@@ -464,13 +486,23 @@ void Presenter::ProcessFrameDumping(u64 ticks) const
 {
   // Sunbright zero-drift A/B: dump the Dolphin GX XFB and the native ngx texture for THIS
   // present (armed by /abshot2). Both come from the same present → camera-aligned.
+  // Frozen-oracle latch: capture the GX XFB ONCE when freeze turns on, then hold it.
+  if (g_sb_freeze_gx == 1 && m_xfb_entry)
+  {
+    if (SbReadTexRGB(m_xfb_entry->texture.get(), m_xfb_rect, g_frozen_gx_ppm, g_frozen_gx_w, g_frozen_gx_h))
+      g_sb_freeze_gx = 2;   // captured & held
+  }
+
   if (g_sb_ab_capture && m_xfb_entry)
   {
-    // gx = Dolphin's GX render of THIS frame (LIVE when g_sb_ngx_present==0). ngx = the native
-    // renderer's texture rendered on demand for the SAME frame (call the cb directly, regardless
-    // of present mode). Both from one present → zero drift, with a LIVE Dolphin oracle.
+    // gx oracle: while frozen, serve the HELD frozen XFB (aligned to the frozen ngx snapshot);
+    // otherwise the LIVE GX render of THIS present. ngx = the native renderer's texture rendered
+    // on demand for the same frozen/live snapshot. Both static+aligned when frozen → toggleable A/B.
     const MathUtil::Rectangle<int> gx_rect = m_xfb_rect;
-    SbWritePPM("scratch/screenshots/ab2.gx.ppm", m_xfb_entry->texture.get(), gx_rect);
+    if (g_sb_freeze_gx == 2 && !g_frozen_gx_ppm.empty())
+      SbWritePPMBytes("scratch/screenshots/ab2.gx.ppm", g_frozen_gx_ppm, g_frozen_gx_w, g_frozen_gx_h);
+    else
+      SbWritePPM("scratch/screenshots/ab2.gx.ppm", m_xfb_entry->texture.get(), gx_rect);
     if (sb_ngx_present_xfb_cb)
     {
       const int w = gx_rect.GetWidth(), h = gx_rect.GetHeight();
