@@ -354,6 +354,14 @@ extern "C" void sb_get_gx_draw_counts(unsigned long* draws, unsigned long* indic
   if (draws) *draws = sb_gx_draws; if (indices) *indices = sb_gx_indices;
   if (pdraws) *pdraws = sb_gx_persp_draws; if (pindices) *pindices = sb_gx_persp_indices;
 }
+// Sunbright: Dolphin's ACTUAL channel ambient/material color (xfmem, GPU thread). ngx defaults
+// ambient to 0 when the J3D block has no ambient field → white materials go black. This is the
+// authoritative ambient to compare against / use. Latched for the last PERSPECTIVE draw (the 3D
+// scene ambient is stable per scene → comparable across the async gap).
+static unsigned sb_amb0 = 0, sb_mat0 = 0; static unsigned long sb_amb_count = 0;
+extern "C" void sb_get_gx_ambient(unsigned* amb0, unsigned* mat0, unsigned long* count) {
+  if (amb0) *amb0 = sb_amb0; if (mat0) *mat0 = sb_mat0; if (count) *count = sb_amb_count;
+}
 
 void VertexManagerBase::DrawCurrentBatch(u32 base_index, u32 num_indices, u32 base_vertex)
 {
@@ -364,7 +372,10 @@ void VertexManagerBase::DrawCurrentBatch(u32 base_index, u32 num_indices, u32 ba
   }
 
   sb_gx_draws++; sb_gx_indices += num_indices;
-  if (xfmem.projection.type == ProjectionType::Perspective) { sb_gx_persp_draws++; sb_gx_persp_indices += num_indices; }
+  if (xfmem.projection.type == ProjectionType::Perspective) {
+    sb_gx_persp_draws++; sb_gx_persp_indices += num_indices;
+    sb_amb0 = xfmem.ambColor[0]; sb_mat0 = xfmem.matColor[0]; sb_amb_count++;
+  }
 
   g_gfx->DrawIndexed(base_index, num_indices, base_vertex);
 }
