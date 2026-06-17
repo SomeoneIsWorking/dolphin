@@ -49,8 +49,10 @@ extern bool (*sb_slot_jit_trampoline)(void* jit, u32 em_address);
 // RAM — letting the runtime substitute interpolated pos-matrices (lerp of the current and previous
 // frame's matrix, read-only) during an in-between replay. Writes only XF/GPU state, never guest RAM.
 //   array  = CPArray (12 = XF_A pos-matrix), base/stride = g_main_cp_state for that array,
-//   index  = the indexed-load index, size = words to produce, out = caller buffer[size].
-extern bool (*sb_slot_xf_indexed)(u32 array, u32 base, u32 stride, u32 index, u32 size, u32* out);
+//   index  = the indexed-load index, size = words to produce, address = XF-memory dest word offset
+//   (pos matrix N occupies posMatrices[address..]; lets the runtime record the matrix into the right
+//   g_posmtx slot — the native renderer's synchronous PNMTXIDX capture), out = caller buffer[size].
+extern bool (*sb_slot_xf_indexed)(u32 array, u32 base, u32 stride, u32 index, u32 size, u32 address, u32* out);
 
 // ── Direct XF-register matrix write (VideoCommon, XFStructs.cpp LoadXFReg XF-mem branch) ───────
 // The companion to sb_slot_xf_indexed for the 60fps replay. Banners, smoke, projected shadows and

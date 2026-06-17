@@ -13,7 +13,7 @@
 
 // Sunbright 60fps render-only interpolation hook slot (see Common/SunbrightHooks.h). Default null =
 // stock behavior, so the fork still builds/runs standalone.
-bool (*sb_slot_xf_indexed)(u32 array, u32 base, u32 stride, u32 index, u32 size, u32* out) = nullptr;
+bool (*sb_slot_xf_indexed)(u32 array, u32 base, u32 stride, u32 index, u32 size, u32 address, u32* out) = nullptr;
 bool (*sb_slot_xf_reg)(u32 xf_mem_addr, u32 transfer_size, const u8* data_be, u32* out_be) = nullptr;
 
 #include "Core/DolphinAnalytics.h"
@@ -304,7 +304,7 @@ void LoadIndexedXF(CPArray array, u32 index, u16 address, u8 size)
       static thread_local std::vector<u32> sb_xf_tmp;
       sb_xf_tmp.resize(size);
       if (sb_slot_xf_indexed(static_cast<u32>(array), g_main_cp_state.array_bases[array],
-                             g_main_cp_state.array_strides[array], index, size, sb_xf_tmp.data()))
+                             g_main_cp_state.array_strides[array], index, size, address, sb_xf_tmp.data()))
         newData = sb_xf_tmp.data();
     }
   }
