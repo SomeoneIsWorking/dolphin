@@ -1165,6 +1165,21 @@ void Presenter::Present(PresentInfo* present_info)
 
   if (g_gfx->IsHeadless())
   {
+    // Sunbright: headless skips the on-screen present, so the ngx XFB-substitute path below
+    // (line ~1215) never runs — and that path is what renders the ngx frame AND performs the
+    // GPU->CPU EFB color/depth readback (g_efb_color) that feeds EFB-COPY effects (the airstrip
+    // ocean reflection / sun occlusion: GXCopyTex reads ngx's scene). Without it the readback
+    // is never maintained, every EFB-copy texture reads black, and those effects render dark
+    // ONLY headless (a capture artifact, not a headed bug). Drive the ngx render+readback here
+    // each presented frame so headless captures match headed for EFB-copy effects. The returned
+    // texture is unused — we want the side effect (render + readback). Cheap relative to the GX
+    // volume and matches what the headed present already does every frame.
+    if (g_sb_ngx_present && sb_ngx_present_xfb_cb && m_xfb_entry)
+    {
+      const int w = m_xfb_rect.GetWidth(), h = m_xfb_rect.GetHeight();
+      if (w > 0 && h > 0)
+        sb_ngx_present_xfb_cb(w, h);
+    }
     // Headless skips the swapchain present, but the GPU frame must STILL be cycled
     // each presented frame so per-frame resources recycle. On Vulkan that recycling
     // (descriptor-pool reset + command-buffer ring advance) lives in PresentBackbuffer's
