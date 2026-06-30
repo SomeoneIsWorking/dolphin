@@ -96,6 +96,10 @@ void GPFifoManager::UpdateGatherPipe()
     // copy the GatherPipe
     memory.CopyToEmu(processor_interface.m_fifo_cpu_write_pointer, m_gather_pipe + processed,
                      GATHER_PIPE_SIZE);
+    // Sunbright: tee every gather-pipe chunk to the GX-command-stream parity oracle. This is the
+    // ONLY point that sees the JIT inline-gather fast path too (it bypasses Write*). Capture-only.
+    if (sb_slot_gather_flush)
+      sb_slot_gather_flush(m_gather_pipe + processed, GATHER_PIPE_SIZE);
     pipe_count -= GATHER_PIPE_SIZE;
 
     // increase the CPUWritePointer
@@ -231,3 +235,4 @@ extern "C" void (*sb_slot_gpfifo_write8)(void*, u8) = nullptr;
 extern "C" void (*sb_slot_gpfifo_write16)(void*, u16) = nullptr;
 extern "C" void (*sb_slot_gpfifo_write32)(void*, u32) = nullptr;
 extern "C" void (*sb_slot_gpfifo_write64)(void*, u64) = nullptr;
+extern "C" void (*sb_slot_gather_flush)(const u8*, std::size_t) = nullptr;
