@@ -86,6 +86,15 @@ void sb_gpfifo_write16_impl(void* self, u16 v);
 void sb_gpfifo_write32_impl(void* self, u32 v);
 void sb_gpfifo_write64_impl(void* self, u64 v);
 
+// GPFifoManager::UpdateGatherPipe — the SINGLE choke point every gather-pipe byte passes through
+// before reaching the CP FIFO, INCLUDING the JIT inline-gather fast path (which bumps
+// gather_pipe_ptr directly and bypasses the Write* funnel above). The hook sees each 32-byte
+// GATHER_PIPE_SIZE chunk, in FIFO order, in big-endian guest format — exactly what the GPU
+// consumes. Used by the runtime's GX-command-stream parity ORACLE (gx_capture.cpp) to capture the
+// Dolphin-GX byte stream under pure-JIT (no-recomp), where the Write* funnel is never called.
+// Capture-only: the hook never alters the bytes or the pipe. Default null = no capture.
+extern void (*sb_slot_gather_flush)(const u8* bytes, std::size_t n);
+
 // ── DSP (Core) ───────────────────────────────────────────────────────────────────────────────
 // DSPManager::GenerateDSPInterrupt — native AID ownership (aid_native.cpp).
 extern void (*sb_slot_dsp_gen_interrupt)(void* self, u64 dsp_int_type, s64 cycles_late);
