@@ -439,6 +439,37 @@ void VertexManagerBase::Flush()
 
   m_is_flushed = true;
 
+  // SB_ORACLE_DRAWLOG=1 (sunbright oracle hook): per-draw GX state log in the
+  // same shape as aurora's SB_DRAW_DUMP so the two streams can be diffed —
+  // projection vector+type, current position matrix (index + 12 floats),
+  // viewport. stderr, sequence-numbered.
+  {
+    static int s_drawlog = -1;
+    if (s_drawlog < 0)
+    {
+      const char* e = getenv("SB_ORACLE_DRAWLOG");
+      s_drawlog = (e != nullptr && e[0] != '\0' && e[0] != '0') ? 1 : 0;
+    }
+    if (s_drawlog == 1)
+    {
+      static long s_n = 0;
+      ++s_n;
+      const u32 mtx_idx = g_main_cp_state.matrix_index_a.PosNormalMtxIdx;
+      const float* pm = &xfmem.posMatrices[mtx_idx * 4];
+      std::fprintf(stderr,
+                   "[oracle-draw] #%ld verts=%u proj=%c prj=[%.4f %.4f %.4f %.4f %.4f %.4f] mtxIdx=%u "
+                   "pos=[%.2f %.2f %.2f %.2f | %.2f %.2f %.2f %.2f | %.2f %.2f %.2f %.2f] "
+                   "vp=(%.0f x %.0f)\n",
+                   s_n, m_index_generator.GetNumVerts(),
+                   xfmem.projection.type == ProjectionType::Orthographic ? 'O' : 'P',
+                   xfmem.projection.rawProjection[0], xfmem.projection.rawProjection[1],
+                   xfmem.projection.rawProjection[2], xfmem.projection.rawProjection[3],
+                   xfmem.projection.rawProjection[4], xfmem.projection.rawProjection[5], mtx_idx,
+                   pm[0], pm[1], pm[2], pm[3], pm[4], pm[5], pm[6], pm[7], pm[8], pm[9], pm[10],
+                   pm[11], xfmem.viewport.wd * 2.f, xfmem.viewport.ht * -2.f);
+    }
+  }
+
   if (m_draw_counter == 0)
   {
     // This is more or less the start of the Frame
@@ -996,6 +1027,22 @@ void VertexManagerBase::OnEFBCopyToRAM()
 
 void VertexManagerBase::OnEndFrame()
 {
+  // sunbright oracle hook: frame boundary marker so drawlog parsers can split
+  // the [oracle-draw] stream into frames (see SB_ORACLE_DRAWLOG in Flush()).
+  {
+    static int s_drawlog = -1;
+    if (s_drawlog < 0)
+    {
+      const char* e = getenv("SB_ORACLE_DRAWLOG");
+      s_drawlog = (e != nullptr && e[0] != '\0' && e[0] != '0') ? 1 : 0;
+    }
+    if (s_drawlog == 1)
+    {
+      static long s_frame = 0;
+      std::fprintf(stderr, "[oracle-frame] #%ld\n", ++s_frame);
+    }
+  }
+
   m_draw_counter = 0;
   m_last_efb_copy_draw_counter = 0;
   m_scheduled_command_buffer_kicks.clear();
