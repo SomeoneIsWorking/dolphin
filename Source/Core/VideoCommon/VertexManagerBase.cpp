@@ -495,6 +495,88 @@ void VertexManagerBase::Flush()
                        L.color[0], L.color[1], L.color[2], L.color[3], L.dpos[0], L.dpos[1], L.dpos[2]);
         }
       }
+
+      // Texgen / texcoord-matrix / bound-texture ground truth for the sunbright
+      // sky-cloud material diff. The GC texcoord matrix data is NOT a separate
+      // table: regular tex matrices (Tex0-7MtxIdx) index into the SAME unified
+      // matrix memory as the position matrix (xfmem.posMatrices), exactly like
+      // VertexShaderManager::SetConstants reads them (3 rows x 4 floats = the
+      // SRT matrix baked at BMD load time). texMtxInfo carries the texgen
+      // projection/input/type/source-row, not the SRT values themselves.
+      const u32 ntg = xfmem.numTexGen.numTexGens;
+      std::fprintf(stderr, "[oracle-texgen] #%ld ntg=%u\n", s_n, ntg);
+      for (u32 i = 0; i < ntg && i < 8; ++i)
+      {
+        const TexMtxInfo& ti = xfmem.texMtxInfo[i];
+        u32 tex_mtx_idx;
+        switch (i)
+        {
+        case 0: tex_mtx_idx = g_main_cp_state.matrix_index_a.Tex0MtxIdx; break;
+        case 1: tex_mtx_idx = g_main_cp_state.matrix_index_a.Tex1MtxIdx; break;
+        case 2: tex_mtx_idx = g_main_cp_state.matrix_index_a.Tex2MtxIdx; break;
+        case 3: tex_mtx_idx = g_main_cp_state.matrix_index_a.Tex3MtxIdx; break;
+        case 4: tex_mtx_idx = g_main_cp_state.matrix_index_b.Tex4MtxIdx; break;
+        case 5: tex_mtx_idx = g_main_cp_state.matrix_index_b.Tex5MtxIdx; break;
+        case 6: tex_mtx_idx = g_main_cp_state.matrix_index_b.Tex6MtxIdx; break;
+        default: tex_mtx_idx = g_main_cp_state.matrix_index_b.Tex7MtxIdx; break;
+        }
+        const float* tm = &xfmem.posMatrices[tex_mtx_idx * 4];
+        std::fprintf(stderr,
+                     "[oracle-texmtx] #%ld tg=%u proj=%d input=%d type=%d srcrow=%d mtxIdx=%u "
+                     "row=[%.5f %.5f %.5f %.5f | %.5f %.5f %.5f %.5f | %.5f %.5f %.5f %.5f]\n",
+                     s_n, i, static_cast<int>(ti.projection.Value()),
+                     static_cast<int>(ti.inputform.Value()), static_cast<int>(ti.texgentype.Value()),
+                     static_cast<int>(ti.sourcerow.Value()), tex_mtx_idx, tm[0], tm[1], tm[2], tm[3],
+                     tm[4], tm[5], tm[6], tm[7], tm[8], tm[9], tm[10], tm[11]);
+      }
+      for (u32 stage = 0; stage < bpmem.genMode.numtevstages + 1u && stage < 8; ++stage)
+      {
+        if (!bpmem.tevorders[stage / 2].getEnable(stage & 1))
+          continue;
+        const u32 texmap = bpmem.tevorders[stage / 2].getTexMap(stage & 1);
+        const u32 texcoord = bpmem.tevorders[stage / 2].getTexCoord(stage & 1);
+        const TexUnit& unit = bpmem.tex.GetUnit(texmap);
+        std::fprintf(stderr,
+                     "[oracle-texwrap] #%ld stage=%u map=%u coord=%u %ux%u fmt=%d wrapS=%d wrapT=%d\n",
+                     s_n, stage, texmap, texcoord, unit.texImage0.width + 1,
+                     unit.texImage0.height + 1, static_cast<int>(unit.texImage0.format.Value()),
+                     static_cast<int>(unit.texMode0.wrap_s.Value()),
+                     static_cast<int>(unit.texMode0.wrap_t.Value()));
+      }
+      std::fprintf(stderr, "[oracle-blend] #%ld enable=%d src=%d dst=%d sub=%d\n", s_n,
+                   (int)bpmem.blendmode.blend_enable.Value(),
+                   static_cast<int>(bpmem.blendmode.src_factor.Value()),
+                   static_cast<int>(bpmem.blendmode.dst_factor.Value()),
+                   (int)bpmem.blendmode.subtract.Value());
+      // [oracle-tev]: full per-stage color/alpha combiner args + which TEV
+      // register/kolor selector each stage reads, so a specific washed-out
+      // draw (e.g. the title logo 2-tone remap) can be diffed stage-for-stage
+      // against aurora's SB_TEV_DUMP without guessing at the combine math.
+      for (u32 stage = 0; stage < bpmem.genMode.numtevstages + 1u && stage < 8; ++stage)
+      {
+        const auto& cc = bpmem.combiners[stage].colorC;
+        const auto& ac = bpmem.combiners[stage].alphaC;
+        const auto& ksel = bpmem.tevksel.ksel[stage / 2];
+        std::fprintf(stderr,
+                     "[oracle-tev] #%ld stage=%u colorPass(a=%d b=%d c=%d d=%d op=%d bias=%d scale=%d) "
+                     "alphaPass(a=%d b=%d c=%d d=%d op=%d bias=%d scale=%d) kcSel=%d kaSel=%d\n",
+                     s_n, stage, static_cast<int>(cc.a.Value()), static_cast<int>(cc.b.Value()),
+                     static_cast<int>(cc.c.Value()), static_cast<int>(cc.d.Value()),
+                     static_cast<int>(cc.op.Value()), static_cast<int>(cc.bias.Value()),
+                     static_cast<int>(cc.scale.Value()), static_cast<int>(ac.a.Value()),
+                     static_cast<int>(ac.b.Value()), static_cast<int>(ac.c.Value()),
+                     static_cast<int>(ac.d.Value()), static_cast<int>(ac.op.Value()),
+                     static_cast<int>(ac.bias.Value()), static_cast<int>(ac.scale.Value()),
+                     (stage & 1) ? static_cast<int>(ksel.kcsel_odd.Value()) : static_cast<int>(ksel.kcsel_even.Value()),
+                     (stage & 1) ? static_cast<int>(ksel.kasel_odd.Value()) : static_cast<int>(ksel.kasel_even.Value()));
+      }
+      for (u32 r = 0; r < 4; ++r)
+      {
+        const auto& reg = bpmem.tevregs[r];
+        std::fprintf(stderr, "[oracle-tevreg] #%ld %u = (%d, %d, %d, %d)\n", s_n, r,
+                     static_cast<int>(reg.ra.red.Value()), static_cast<int>(reg.bg.green.Value()),
+                     static_cast<int>(reg.bg.blue.Value()), static_cast<int>(reg.ra.alpha.Value()));
+      }
     }
   }
 
