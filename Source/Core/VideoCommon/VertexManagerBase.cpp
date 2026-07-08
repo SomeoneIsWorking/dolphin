@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <memory>
 
 #include "Common/ChunkFile.h"
@@ -14,8 +15,10 @@
 #include "Common/Logging/Log.h"
 #include "Common/MathUtil.h"
 #include "Common/SmallVector.h"
+#include "Common/Swap.h"
 
 #include "Core/DolphinAnalytics.h"
+#include "Core/HW/Memmap.h"
 #include "Core/HW/SystemTimers.h"
 #include "Core/System.h"
 
@@ -584,6 +587,123 @@ void VertexManagerBase::Flush()
   {
     // This is more or less the start of the Frame
     GetVideoEvents().before_frame_event.Trigger();
+
+    // SB_ORACLE_CAM=1 (sunbright oracle hook): once-per-frame ground-truth dump of
+    // gpMarioPos and the active title camera (gpCamera) + gpCameraOption state, direct
+    // from GMSE01 (US) RAM. Answers whether the title sea's off-frustum wave grid is a
+    // Mario-placement gap or a camera-state gap (title camera cycles via TCameraOption's
+    // cube-pan state machine, CameraOption.cpp/CameraOption.hpp). Addresses resolved via
+    // tools/dol_sda.py + direct disasm of SMS_GetMarioPos/TSunMgr::perform/
+    // ctrlOptionCamera_ against scratch/sms_us.dol (see debug_journal note referencing
+    // this capture): gpCamera = 0x8040D0A8 (r13-0x7118), gpCameraOption = 0x8040D108
+    // (r13-0x70B8), gpMarioPos = 0x8040E10C (r13-0x60B4); SDA_BASE(r13) = 0x804141C0.
+    // CPolarSubCamera layout (absolute offsets from JDRCamera.hpp/Camera.hpp):
+    // mPosition@0x10 (TPlacement), mTarget@0x3C, mFovy@0x48 (TLookAtCamera), mMode@0x50.
+    // TCameraOption layout (CameraOption.hpp): mFlags@0x0, mFovy@0x4,
+    // mIntroChaseTimer@0xA, mLoadPanTimer@0xE, mCubePanTimer@0x12, mUpDownPanTimer@0x16,
+    // mTitlePos@0x18.
+    static int s_camlog = -1;
+    if (s_camlog < 0)
+    {
+      const char* e = getenv("SB_ORACLE_CAM");
+      s_camlog = (e != nullptr && e[0] != '\0' && e[0] != '0') ? 1 : 0;
+    }
+    if (s_camlog == 1)
+    {
+      static long s_frame = 0;
+      ++s_frame;
+      auto& memory = Core::System::GetInstance().GetMemory();
+
+      auto read_u32 = [&](u32 addr) -> u32 {
+        const u8* p = memory.GetPointerForRange(addr, 4);
+        if (!p)
+          return 0;
+        u32 v;
+        std::memcpy(&v, p, 4);
+        return Common::swap32(v);
+      };
+      auto read_f32 = [&](u32 addr) -> float {
+        const u32 bits = read_u32(addr);
+        float f;
+        std::memcpy(&f, &bits, 4);
+        return f;
+      };
+      auto read_s16 = [&](u32 addr) -> s16 {
+        const u8* p = memory.GetPointerForRange(addr, 2);
+        if (!p)
+          return 0;
+        u16 v;
+        std::memcpy(&v, p, 2);
+        return static_cast<s16>(Common::swap16(v));
+      };
+      auto read_u8 = [&](u32 addr) -> u8 {
+        const u8* p = memory.GetPointerForRange(addr, 1);
+        return p ? *p : 0;
+      };
+
+      const u32 kGpCamera = 0x8040D0A8;
+      const u32 kGpCameraOption = 0x8040D108;
+      const u32 kGpMarioPos = 0x8040E10C;
+
+      const u32 marioPosPtr = read_u32(kGpMarioPos);
+      const u32 cameraPtr = read_u32(kGpCamera);
+      const u32 cameraOptionPtr = read_u32(kGpCameraOption);
+
+      if (marioPosPtr != 0)
+      {
+        const float mx = read_f32(marioPosPtr + 0x0);
+        const float my = read_f32(marioPosPtr + 0x4);
+        const float mz = read_f32(marioPosPtr + 0x8);
+        std::fprintf(stderr, "[oracle-marpos] #%ld ptr=%08x pos=(%.2f,%.2f,%.2f)\n", s_frame,
+                     marioPosPtr, mx, my, mz);
+      }
+      else
+      {
+        std::fprintf(stderr, "[oracle-marpos] #%ld gpMarioPos=NULL\n", s_frame);
+      }
+
+      if (cameraPtr != 0)
+      {
+        const float px = read_f32(cameraPtr + 0x10);
+        const float py = read_f32(cameraPtr + 0x14);
+        const float pz = read_f32(cameraPtr + 0x18);
+        const float tx = read_f32(cameraPtr + 0x3C);
+        const float ty = read_f32(cameraPtr + 0x40);
+        const float tz = read_f32(cameraPtr + 0x44);
+        const float fovy = read_f32(cameraPtr + 0x48);
+        const u32 mode = read_u32(cameraPtr + 0x50);
+        std::fprintf(stderr,
+                     "[oracle-cam] #%ld ptr=%08x pos=(%.2f,%.2f,%.2f) target=(%.2f,%.2f,%.2f) "
+                     "fovy=%.2f mode=%u\n",
+                     s_frame, cameraPtr, px, py, pz, tx, ty, tz, fovy, mode);
+      }
+      else
+      {
+        std::fprintf(stderr, "[oracle-cam] #%ld gpCamera=NULL\n", s_frame);
+      }
+
+      if (cameraOptionPtr != 0)
+      {
+        const u8 flags = read_u8(cameraOptionPtr + 0x0);
+        const float opt_fovy = read_f32(cameraOptionPtr + 0x4);
+        const s16 introTimer = read_s16(cameraOptionPtr + 0xA);
+        const s16 loadTimer = read_s16(cameraOptionPtr + 0xE);
+        const s16 cubeTimer = read_s16(cameraOptionPtr + 0x12);
+        const s16 updownTimer = read_s16(cameraOptionPtr + 0x16);
+        const float ttx = read_f32(cameraOptionPtr + 0x18);
+        const float tty = read_f32(cameraOptionPtr + 0x1C);
+        const float ttz = read_f32(cameraOptionPtr + 0x20);
+        std::fprintf(stderr,
+                     "[oracle-camopt] #%ld ptr=%08x flags=0x%x fovy=%.2f introTimer=%d "
+                     "loadTimer=%d cubeTimer=%d updownTimer=%d titlePos=(%.2f,%.2f,%.2f)\n",
+                     s_frame, cameraOptionPtr, flags, opt_fovy, introTimer, loadTimer, cubeTimer,
+                     updownTimer, ttx, tty, ttz);
+      }
+      else
+      {
+        std::fprintf(stderr, "[oracle-camopt] #%ld gpCameraOption=NULL\n", s_frame);
+      }
+    }
   }
 
   if (xfmem.numTexGen.numTexGens != bpmem.genMode.numtexgens ||
