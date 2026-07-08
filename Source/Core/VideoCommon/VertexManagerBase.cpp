@@ -467,6 +467,34 @@ void VertexManagerBase::Flush()
                    xfmem.projection.rawProjection[4], xfmem.projection.rawProjection[5], mtx_idx,
                    pm[0], pm[1], pm[2], pm[3], pm[4], pm[5], pm[6], pm[7], pm[8], pm[9], pm[10],
                    pm[11], xfmem.viewport.wd * 2.f, xfmem.viewport.ht * -2.f);
+      // Channel/light ground truth for the sunbright lighting diff: channel 0
+      // matSrc/ambSrc/lightingEnabled/lightMask + ambColor/matColor registers
+      // + the active lights' color and position (dpos). Lets the port confirm
+      // which lights GC actually has loaded at the title and whether the lit
+      // materials get a nonzero ambient/diffuse term.
+      const auto& c0 = xfmem.color[0];
+      const auto& a0 = xfmem.alpha[0];
+      const u32 amb = xfmem.ambColor[0];
+      const u32 mat = xfmem.matColor[0];
+      const u32 mask = c0.GetFullLightMask();
+      std::fprintf(stderr,
+                   "[oracle-chan] #%ld ch0[matSrc=%d light=%d ambSrc=%d mask=%02x] "
+                   "amb=(%u,%u,%u,%u) mat=(%u,%u,%u,%u) aMask=%02x\n",
+                   s_n, static_cast<int>(c0.matsource.Value()), (int)c0.enablelighting, static_cast<int>(c0.ambsource.Value()), mask,
+                   (amb >> 24) & 0xff, (amb >> 16) & 0xff, (amb >> 8) & 0xff, amb & 0xff,
+                   (mat >> 24) & 0xff, (mat >> 16) & 0xff, (mat >> 8) & 0xff, mat & 0xff,
+                   a0.GetFullLightMask());
+      if (mask != 0)
+      {
+        for (int li = 0; li < 8; ++li)
+        {
+          if (!(mask & (1u << li)))
+            continue;
+          const auto& L = xfmem.lights[li];
+          std::fprintf(stderr, "[oracle-light] #%ld L%d color=(%u,%u,%u,%u) pos=(%.1f,%.1f,%.1f)\n", s_n, li,
+                       L.color[0], L.color[1], L.color[2], L.color[3], L.dpos[0], L.dpos[1], L.dpos[2]);
+        }
+      }
     }
   }
 
