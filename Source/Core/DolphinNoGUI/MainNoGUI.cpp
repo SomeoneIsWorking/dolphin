@@ -337,13 +337,18 @@ int main(const int argc, char* argv[])
   // process exits with the file written. The EventHook is kept alive in a static
   // for the whole run.
   static Common::EventHook s_fifo_record_hook;
-  if (const char* fifo_path = options.get("fifo_record"); fifo_path && *fifo_path)
+  if (options.is_set("fifo_record"))
   {
-    static std::string s_path = fifo_path;
+    // options.get() returns an optparse::Value by value; its operator const char*
+    // points into that temporary's std::string, so the string must be copied out
+    // within the same full-expression (matching the platform/user option handling
+    // above) — capturing a const char* first would dangle.
+    static std::string s_path = static_cast<const char*>(options.get("fifo_record"));
     static int s_after = options.get("fifo_record_after");
     static int s_frames = options.get("fifo_record_frames");
     static int s_field = 0;
     static bool s_started = false;
+    static bool s_finished = false;  // set by the recorder's finished callback
     static bool s_done = false;
     auto& system = Core::System::GetInstance();
     fprintf(stderr, "[sb-fifo] armed: record %d frames to '%s' after %d fields\n", s_frames,
@@ -356,15 +361,21 @@ int main(const int argc, char* argv[])
       if (!s_started && s_field >= s_after)
       {
         s_started = true;
-        rec.StartRecording(s_frames, [] {});
+        // The finished callback is the only signal that all s_frames were captured:
+        // it fires (FifoRecorder::WriteGPCommand) after the final frame's AddFrame once
+        // the requested frame count is reached. IsRecordingDone() is NOT that signal —
+        // it flips true on the first (skipped) setup EndFrame, so polling it saves a
+        // 0-frame file.
+        rec.StartRecording(s_frames, [] { s_finished = true; });
         fprintf(stderr, "[sb-fifo] StartRecording at field %d\n", s_field);
       }
-      if (s_started && rec.IsRecordingDone())
+      if (s_started && s_finished)
       {
         FifoDataFile* file = rec.GetRecordedFile();
         const bool ok = file != nullptr && file->Save(s_path);
-        fprintf(stderr, "[sb-fifo] recorded %d frame(s) -> '%s' (save %s)\n", s_frames,
-                s_path.c_str(), ok ? "OK" : "FAILED");
+        fprintf(stderr, "[sb-fifo] recorded %d frame(s) -> '%s' (save %s)\n",
+                file != nullptr ? file->GetFrameCount() : 0, s_path.c_str(),
+                ok ? "OK" : "FAILED");
         s_done = true;
         s_platform->RequestShutdown();
       }
