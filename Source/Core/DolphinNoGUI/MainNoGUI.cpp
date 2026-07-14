@@ -15,13 +15,17 @@
 #include <Windows.h>
 #endif
 
+#include "Common/HookableEvent.h"
 #include "Common/ScopeGuard.h"
 #include "Core/Boot/Boot.h"
 #include "Core/BootManager.h"
 #include "Core/Core.h"
 #include "Core/DolphinAnalytics.h"
+#include "Core/FifoPlayer/FifoDataFile.h"
+#include "Core/FifoPlayer/FifoRecorder.h"
 #include "Core/Host.h"
 #include "Core/System.h"
+#include "VideoCommon/VideoEvents.h"
 
 #include "UICommon/CommandLineParse.h"
 #ifdef USE_DISCORD_PRESENCE
@@ -210,6 +214,24 @@ int main(const int argc, char* argv[])
 #endif
       });
 
+  // Sunbright: headless FIFO recording. Drives Dolphin's own FifoRecorder from
+  // the NoGUI frontend so a .dff can be captured with no Qt window — replaces
+  // the xdrive.py GUI-driving hack. Boot is deterministic under a fixed
+  // EmulationSpeed, so a frame count reliably lands on a target scene.
+  parser->add_option("--fifo-record")
+      .action("store")
+      .help("Headless: record a FIFO log (.dff) to this path, then exit");
+  parser->add_option("--fifo-record-after")
+      .action("store")
+      .type("int")
+      .set_default("3400")
+      .help("VI fields to wait after boot before recording starts [%default]");
+  parser->add_option("--fifo-record-frames")
+      .action("store")
+      .type("int")
+      .set_default("3")
+      .help("Number of frames to record into the .dff [%default]");
+
   optparse::Values& options = CommandLineParse::ParseArguments(parser.get(), argc, argv);
   std::vector<std::string> args = parser->args();
 
@@ -307,6 +329,46 @@ int main(const int argc, char* argv[])
   {
     fprintf(stderr, "Could not boot the specified file\n");
     return 1;
+  }
+
+  // Sunbright: arm headless FIFO recording. On each VI field end (deterministic
+  // under FIFO/fixed speed): once `after` fields have elapsed, StartRecording;
+  // once the recorder reports done, Save the .dff and RequestShutdown so the
+  // process exits with the file written. The EventHook is kept alive in a static
+  // for the whole run.
+  static Common::EventHook s_fifo_record_hook;
+  if (const char* fifo_path = options.get("fifo_record"); fifo_path && *fifo_path)
+  {
+    static std::string s_path = fifo_path;
+    static int s_after = options.get("fifo_record_after");
+    static int s_frames = options.get("fifo_record_frames");
+    static int s_field = 0;
+    static bool s_started = false;
+    static bool s_done = false;
+    auto& system = Core::System::GetInstance();
+    fprintf(stderr, "[sb-fifo] armed: record %d frames to '%s' after %d fields\n", s_frames,
+            s_path.c_str(), s_after);
+    s_fifo_record_hook = system.GetVideoEvents().vi_end_field_event.Register([&system] {
+      if (s_done)
+        return;
+      ++s_field;
+      FifoRecorder& rec = system.GetFifoRecorder();
+      if (!s_started && s_field >= s_after)
+      {
+        s_started = true;
+        rec.StartRecording(s_frames, [] {});
+        fprintf(stderr, "[sb-fifo] StartRecording at field %d\n", s_field);
+      }
+      if (s_started && rec.IsRecordingDone())
+      {
+        FifoDataFile* file = rec.GetRecordedFile();
+        const bool ok = file != nullptr && file->Save(s_path);
+        fprintf(stderr, "[sb-fifo] recorded %d frame(s) -> '%s' (save %s)\n", s_frames,
+                s_path.c_str(), ok ? "OK" : "FAILED");
+        s_done = true;
+        s_platform->RequestShutdown();
+      }
+    });
   }
 
 #ifdef USE_DISCORD_PRESENCE
