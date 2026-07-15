@@ -19,6 +19,14 @@
 #include "Core/System.h"
 #include "InputCommon/GCPadStatus.h"
 
+#include "Common/SunbrightHooks.h"
+
+// sms-boot oracle harness: headless scripted-START globals (declared extern "C" in
+// SunbrightHooks.h). Set by DolphinNoGUI --pad-start-at / --pad-start-frames.
+int sb_pad_start_at = -1;
+int sb_pad_start_dur = 0;
+int sb_pad_cur_field = 0;
+
 namespace SerialInterface
 {
 // --- standard GameCube controller ---
@@ -155,6 +163,15 @@ GCPadStatus CSIDevice_GCController::GetPadStatus()
   // Watch for this to calibrate real controllers on connection.
   if (pad_status.button & PAD_GET_ORIGIN)
     SetOrigin(pad_status);
+
+  // sms-boot oracle harness: inject a scripted START press over a VI-field window so the
+  // headless fifo recorder can reach input-gated screens (file-select). See SunbrightHooks.h.
+  if (sb_pad_start_at >= 0 && sb_pad_cur_field >= sb_pad_start_at &&
+      sb_pad_cur_field < sb_pad_start_at + sb_pad_start_dur)
+  {
+    pad_status.button |= PAD_BUTTON_START;
+    pad_status.isConnected = true;
+  }
 
   return pad_status;
 }

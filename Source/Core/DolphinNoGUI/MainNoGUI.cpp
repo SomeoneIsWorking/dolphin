@@ -17,6 +17,7 @@
 
 #include "Common/HookableEvent.h"
 #include "Common/ScopeGuard.h"
+#include "Common/SunbrightHooks.h"
 #include "Core/Boot/Boot.h"
 #include "Core/BootManager.h"
 #include "Core/Core.h"
@@ -231,6 +232,17 @@ int main(const int argc, char* argv[])
       .type("int")
       .set_default("3")
       .help("Number of frames to record into the .dff [%default]");
+  parser->add_option("--pad-start-at")
+      .action("store")
+      .type("int")
+      .set_default("-1")
+      .help("Headless oracle: VI field to begin holding GC START, to reach input-gated "
+            "screens like file-select (-1 = off) [%default]");
+  parser->add_option("--pad-start-frames")
+      .action("store")
+      .type("int")
+      .set_default("6")
+      .help("VI fields to hold the injected START press [%default]");
 
   optparse::Values& options = CommandLineParse::ParseArguments(parser.get(), argc, argv);
   std::vector<std::string> args = parser->args();
@@ -350,13 +362,17 @@ int main(const int argc, char* argv[])
     static bool s_started = false;
     static bool s_finished = false;  // set by the recorder's finished callback
     static bool s_done = false;
+    // Headless scripted START (oracle harness): reach an input-gated screen before recording.
+    sb_pad_start_at = options.get("pad_start_at");
+    sb_pad_start_dur = options.get("pad_start_frames");
     auto& system = Core::System::GetInstance();
-    fprintf(stderr, "[sb-fifo] armed: record %d frames to '%s' after %d fields\n", s_frames,
-            s_path.c_str(), s_after);
+    fprintf(stderr, "[sb-fifo] armed: record %d frames to '%s' after %d fields (pad START @%d for %d)\n",
+            s_frames, s_path.c_str(), s_after, sb_pad_start_at, sb_pad_start_dur);
     s_fifo_record_hook = system.GetVideoEvents().vi_end_field_event.Register([&system] {
       if (s_done)
         return;
       ++s_field;
+      sb_pad_cur_field = s_field;  // drive the scripted-pad field window
       FifoRecorder& rec = system.GetFifoRecorder();
       if (!s_started && s_field >= s_after)
       {

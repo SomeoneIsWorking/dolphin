@@ -141,6 +141,15 @@ extern void* (*sb_slot_ucode_factory)(u32 crc, void* dsphle, bool wii);
 // original body has filled *vpb (the tracer only reads). self = ZeldaAudioRenderer*.
 extern void (*sb_slot_zelda_fetch_vpb)(void* self, u16 voice_id, void* vpb);
 
+// ── Headless scripted pad input (sms-boot oracle harness) ────────────────────────────────────
+// DolphinNoGUI --pad-start-at / --pad-start-frames inject a GC START press over a VI-field
+// window so the headless fifo recorder can reach input-gated screens (file-select, etc.) that
+// the deterministic field-count boot can't reach on its own. Defined in SI_DeviceGCController.cpp;
+// sb_pad_cur_field is advanced once per VI field by MainNoGUI's vi_end_field hook.
+extern int sb_pad_start_at;    // first VI field to hold START (-1 = disabled)
+extern int sb_pad_start_dur;   // number of fields to hold it
+extern int sb_pad_cur_field;   // current VI field (advanced by the NoGUI field hook)
+
 }  // extern "C"
 
 // Install all hooks. Defined in runtime/sunbright_hooks.cpp; called once at runtime startup.
