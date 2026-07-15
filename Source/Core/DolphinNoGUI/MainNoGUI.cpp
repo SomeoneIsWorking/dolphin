@@ -24,7 +24,9 @@
 #include "Core/DolphinAnalytics.h"
 #include "Core/FifoPlayer/FifoDataFile.h"
 #include "Core/FifoPlayer/FifoRecorder.h"
+#include "Common/FileUtil.h"
 #include "Core/Host.h"
+#include "Core/State.h"
 #include "Core/System.h"
 #include "VideoCommon/VideoEvents.h"
 
@@ -243,6 +245,17 @@ int main(const int argc, char* argv[])
       .type("int")
       .set_default("6")
       .help("VI fields to hold the injected START press [%default]");
+  parser->add_option("--save-state-at")
+      .action("store")
+      .type("int")
+      .set_default("-1")
+      .help("Headless oracle: save a Dolphin save state at this VI field, then exit. Pairs with "
+            "--pad-start-at to reach a settled scene, giving a REPRODUCIBLE matched-state oracle "
+            "(reload with --save_state) (-1 = off) [%default]");
+  parser->add_option("--save-state-path")
+      .action("store")
+      .set_default("scratch/oracle/state/fsel.sav")
+      .help("Path for --save-state-at to write the save state [%default]");
 
   optparse::Values& options = CommandLineParse::ParseArguments(parser.get(), argc, argv);
   std::vector<std::string> args = parser->args();
@@ -393,6 +406,54 @@ int main(const int argc, char* argv[])
                 file != nullptr ? file->GetFrameCount() : 0, s_path.c_str(),
                 ok ? "OK" : "FAILED");
         s_done = true;
+        s_platform->RequestShutdown();
+      }
+    });
+  }
+
+  // Sunbright: headless SAVE-STATE-AT-FIELD (matched-state oracle tooling). At a
+  // chosen VI field (after --pad-start-at settles a scene), write a Dolphin save
+  // state, then exit. Reloading it with --save_state gives a REPRODUCIBLE frozen
+  // oracle frame (framedump or FIFO-record from the same state) — the only sound
+  // way to compare native vs oracle when the scene animates (camera pan / Mario
+  // idle). Mutually exclusive with --fifo-record (both drive the field counter).
+  static Common::EventHook s_save_state_hook;
+  if (options.is_set("save_state_at") && static_cast<int>(options.get("save_state_at")) >= 0 &&
+      !options.is_set("fifo_record"))
+  {
+    static int s_ss_at = options.get("save_state_at");
+    static std::string s_ss_path = static_cast<const char*>(options.get("save_state_path"));
+    static int s_ss_field = 0;
+    static bool s_ss_saved = false;
+    static int s_ss_saved_field = 0;
+    static bool s_ss_done = false;
+    // Reuse the scripted-START window so save-state-at can reach input-gated screens.
+    sb_pad_start_at = options.get("pad_start_at");
+    sb_pad_start_dur = options.get("pad_start_frames");
+    auto& system = Core::System::GetInstance();
+    // Ensure the destination directory exists (State::SaveAs does not mkdir).
+    File::CreateFullPath(s_ss_path);
+    fprintf(stderr, "[sb-state] armed: save state at field %d -> '%s' (pad START @%d for %d)\n",
+            s_ss_at, s_ss_path.c_str(), sb_pad_start_at, sb_pad_start_dur);
+    s_save_state_hook = system.GetVideoEvents().vi_end_field_event.Register([&system] {
+      if (s_ss_done)
+        return;
+      ++s_ss_field;
+      sb_pad_cur_field = s_ss_field;  // drive the scripted-pad field window
+      if (!s_ss_saved && s_ss_field >= s_ss_at)
+      {
+        s_ss_saved = true;
+        s_ss_saved_field = s_ss_field;
+        State::SaveAs(system, s_ss_path);
+        fprintf(stderr, "[sb-state] SaveAs queued at field %d\n", s_ss_field);
+      }
+      // Let the async CPU-thread save + compress/dump worker complete before we
+      // tear down (SaveAs is not synchronous). ~30 fields of emulation is ample;
+      // Core::Shutdown's State flush is the backstop if it somehow isn't.
+      if (s_ss_saved && s_ss_field >= s_ss_saved_field + 30)
+      {
+        s_ss_done = true;
+        fprintf(stderr, "[sb-state] state written -> '%s'; shutting down\n", s_ss_path.c_str());
         s_platform->RequestShutdown();
       }
     });
