@@ -6,6 +6,7 @@
 #include <OptionParser.h>
 #include <csignal>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -27,6 +28,7 @@
 #include "Common/FileUtil.h"
 #include "Core/Host.h"
 #include "Core/State.h"
+#include "Core/HW/Memmap.h"
 #include "Core/System.h"
 #include "VideoCommon/VideoEvents.h"
 
@@ -270,6 +272,12 @@ int main(const int argc, char* argv[])
       .set_default("90")
       .help("VI fields to keep rendering after --load-state-at loads, before exiting (lets the framedump "
             "AVI finalize) [%default]");
+  parser->add_option("--dump-state-json")
+      .action("store")
+      .set_default("")
+      .help("Sunbright pin-harness: after --load-state-at settles, read GMSE01 guest game state "
+            "(gpCamera pos/target/up/fovy/mode + gpMarioPos) and write it as JSON to this path, so "
+            "the native port can be forced into the identical state (SB_PIN_STATE). [%default]");
 
   optparse::Values& options = CommandLineParse::ParseArguments(parser.get(), argc, argv);
   std::vector<std::string> args = parser->args();
@@ -489,6 +497,7 @@ int main(const int argc, char* argv[])
     static int s_ls_at = options.get("load_state_at");
     static int s_ls_exit_after = options.get("load_state_exit_after");
     static std::string s_ls_path = static_cast<const char*>(options.get("save_state_path"));
+    static std::string s_dump_json = static_cast<const char*>(options.get("dump_state_json"));
     static int s_ls_field = 0;
     static bool s_ls_loaded = false;
     static int s_ls_loaded_field = 0;
@@ -511,6 +520,37 @@ int main(const int argc, char* argv[])
       if (s_ls_loaded && s_ls_field >= s_ls_loaded_field + s_ls_exit_after)
       {
         s_ls_done = true;
+        // Sunbright pin-harness: dump GMSE01 guest game state so the native port can
+        // be forced into the identical camera+Mario state (SB_PIN_STATE). Addresses
+        // RE'd via Ghidra + dol_sda.py (see memory scene-sync-pin-harness).
+        if (!s_dump_json.empty())
+        {
+          auto& mem = system.GetMemory();
+          auto rf = [&mem](u32 a) { u32 b = mem.Read_U32(a); float f; std::memcpy(&f, &b, 4); return f; };
+          const u32 cam = mem.Read_U32(0x8040D0A8);            // gpCamera (CPolarSubCamera*)
+          const u32 mode = cam ? mem.Read_U32(cam + 0x50) : 0; // mMode
+          FILE* jf = std::fopen(s_dump_json.c_str(), "wb");
+          if (jf && cam)
+          {
+            std::fprintf(jf,
+                "{\n  \"camPos\": [%.4f, %.4f, %.4f],\n  \"camUp\": [%.4f, %.4f, %.4f],\n"
+                "  \"camTarget\": [%.4f, %.4f, %.4f],\n  \"camFovy\": %.4f,\n  \"camMode\": %u,\n"
+                "  \"marioPos\": [%.4f, %.4f, %.4f]\n}\n",
+                rf(cam + 0x10), rf(cam + 0x14), rf(cam + 0x18),   // mPosition
+                rf(cam + 0x30), rf(cam + 0x34), rf(cam + 0x38),   // mUp
+                rf(cam + 0x3C), rf(cam + 0x40), rf(cam + 0x44),   // mTarget
+                rf(cam + 0x48), mode,                             // mFovy, mMode
+                rf(0x8040E10C), rf(0x8040E110), rf(0x8040E114));  // gpMarioPos
+            std::fclose(jf);
+            std::fprintf(stderr, "[sb-pin] dumped guest state -> '%s' (cam@%08x mode=%u)\n",
+                         s_dump_json.c_str(), cam, mode);
+          }
+          else
+          {
+            std::fprintf(stderr, "[sb-pin] FAILED to dump (cam=%08x, file=%p)\n", cam, (void*)jf);
+            if (jf) std::fclose(jf);
+          }
+        }
         fprintf(stderr, "[sb-loadstate] rendered %d fields post-load; shutting down\n", s_ls_exit_after);
         s_platform->RequestShutdown();
       }
