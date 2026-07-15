@@ -255,7 +255,21 @@ int main(const int argc, char* argv[])
   parser->add_option("--save-state-path")
       .action("store")
       .set_default("scratch/oracle/state/fsel.sav")
-      .help("Path for --save-state-at to write the save state [%default]");
+      .help("Path for --save-state-at to write / --load-state-at to read the save state [%default]");
+  parser->add_option("--load-state-at")
+      .action("store")
+      .type("int")
+      .set_default("-1")
+      .help("Headless oracle RENDER path: FRESH-boot the game, then at this VI field LOAD the save state "
+            "(--save-state-path) mid-run and keep rendering — the reproducible matched-state oracle frame. "
+            "Use this instead of --save_state (headless boot-FROM-state does not step the core). Pair with "
+            "-C Dolphin.Movie.DumpFrames=True and grab a frame a few fields after the load. (-1 = off) [%default]");
+  parser->add_option("--load-state-exit-after")
+      .action("store")
+      .type("int")
+      .set_default("90")
+      .help("VI fields to keep rendering after --load-state-at loads, before exiting (lets the framedump "
+            "AVI finalize) [%default]");
 
   optparse::Values& options = CommandLineParse::ParseArguments(parser.get(), argc, argv);
   std::vector<std::string> args = parser->args();
@@ -418,8 +432,8 @@ int main(const int argc, char* argv[])
   // way to compare native vs oracle when the scene animates (camera pan / Mario
   // idle). Mutually exclusive with --fifo-record (both drive the field counter).
   static Common::EventHook s_save_state_hook;
-  if (options.is_set("save_state_at") && static_cast<int>(options.get("save_state_at")) >= 0 &&
-      !options.is_set("fifo_record"))
+  if (static_cast<int>(options.get("save_state_at")) >= 0 &&
+      !options.is_set_by_user("fifo_record") && !options.is_set_by_user("load_state_at"))
   {
     static int s_ss_at = options.get("save_state_at");
     static std::string s_ss_path = static_cast<const char*>(options.get("save_state_path"));
@@ -454,6 +468,50 @@ int main(const int argc, char* argv[])
       {
         s_ss_done = true;
         fprintf(stderr, "[sb-state] state written -> '%s'; shutting down\n", s_ss_path.c_str());
+        s_platform->RequestShutdown();
+      }
+    });
+  }
+
+  // Sunbright: headless LOAD-STATE-AT (matched-state oracle RENDER path). The core
+  // is FRESH-booted (no --save_state — headless boot-FROM-state loads but never steps
+  // VI fields), so the emu thread is already running; at the target VI field we
+  // State::LoadAs the frozen state mid-run and keep rendering. The scene jumps to the
+  // saved state and subsequent frames render it deterministically → framedump (pair
+  // with -C Dolphin.Movie.DumpFrames=True) gives the reproducible matched-state oracle.
+  static Common::EventHook s_load_state_hook;
+  // NB: is_set(d) is true for any option with a default (optparse seeds defaults into
+  // the value map), so mutual-exclusion checks MUST use is_set_by_user (populated only
+  // when the user actually passes the flag). The >= 0 value check gates activation.
+  if (static_cast<int>(options.get("load_state_at")) >= 0 &&
+      !options.is_set_by_user("fifo_record") && !options.is_set_by_user("save_state_at"))
+  {
+    static int s_ls_at = options.get("load_state_at");
+    static int s_ls_exit_after = options.get("load_state_exit_after");
+    static std::string s_ls_path = static_cast<const char*>(options.get("save_state_path"));
+    static int s_ls_field = 0;
+    static bool s_ls_loaded = false;
+    static int s_ls_loaded_field = 0;
+    static bool s_ls_done = false;
+    auto& system = Core::System::GetInstance();
+    fprintf(stderr, "[sb-loadstate] armed: load '%s' at field %d, exit +%d fields\n",
+            s_ls_path.c_str(), s_ls_at, s_ls_exit_after);
+    s_load_state_hook = system.GetVideoEvents().vi_end_field_event.Register([&system] {
+      if (s_ls_done)
+        return;
+      ++s_ls_field;
+      sb_pad_cur_field = s_ls_field;
+      if (!s_ls_loaded && s_ls_field >= s_ls_at)
+      {
+        s_ls_loaded = true;
+        s_ls_loaded_field = s_ls_field;
+        State::LoadAs(system, s_ls_path);
+        fprintf(stderr, "[sb-loadstate] LoadAs('%s') at field %d\n", s_ls_path.c_str(), s_ls_field);
+      }
+      if (s_ls_loaded && s_ls_field >= s_ls_loaded_field + s_ls_exit_after)
+      {
+        s_ls_done = true;
+        fprintf(stderr, "[sb-loadstate] rendered %d fields post-load; shutting down\n", s_ls_exit_after);
         s_platform->RequestShutdown();
       }
     });
