@@ -544,6 +544,19 @@ int main(const int argc, char* argv[])
             std::fclose(jf);
             std::fprintf(stderr, "[sb-pin] dumped guest state -> '%s' (cam@%08x mode=%u)\n",
                          s_dump_json.c_str(), cam, mode);
+            // Raw dump of gpMarioOriginal (0x8040E0E8 -> TMario*) first 0x1C0 bytes as
+            // u32, so the guest TMario layout (mFlag w/0x8000 FLUDD bit, mPosition, anim)
+            // can be located empirically vs known values (native pos=950,100,-1000).
+            const u32 mario = mem.Read_U32(0x8040E0E8);
+            std::fprintf(stderr, "[sb-pin] gpMarioOriginal=%08x\n", mario);
+            if (mario) {
+              for (u32 off = 0; off < 0x1C0; off += 4) {
+                u32 w = mem.Read_U32(mario + off);
+                float f; std::memcpy(&f, &w, 4);
+                std::fprintf(stderr, "  mario+0x%03x = 0x%08x  f=%.3f  fludd=%d\n",
+                             off, w, f, (w & 0x8000) ? 1 : 0);
+              }
+            }
           }
           else
           {
