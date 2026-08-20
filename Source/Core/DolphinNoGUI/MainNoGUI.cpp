@@ -247,6 +247,31 @@ int main(const int argc, char* argv[])
       .type("int")
       .set_default("6")
       .help("VI fields to hold the injected START press [%default]");
+  parser->add_option("--pad-z-at")
+      .action("store")
+      .type("int")
+      .set_default("-1")
+      .help("Headless oracle: VI field to begin holding GC Z (-1 = off) [%default]");
+  parser->add_option("--pad-z-frames")
+      .action("store")
+      .type("int")
+      .set_default("6")
+      .help("VI fields to hold the injected Z press [%default]");
+  parser->add_option("--pad-a-at")
+      .action("store")
+      .type("int")
+      .set_default("-1")
+      .help("Headless oracle: VI field to begin the first GC A press (-1 = off) [%default]");
+  parser->add_option("--pad-a2-at")
+      .action("store")
+      .type("int")
+      .set_default("-1")
+      .help("Headless oracle: VI field to begin the second GC A press (-1 = off) [%default]");
+  parser->add_option("--pad-a-frames")
+      .action("store")
+      .type("int")
+      .set_default("4")
+      .help("VI fields to hold each injected A press [%default]");
   parser->add_option("--save-state-at")
       .action("store")
       .type("int")
@@ -281,6 +306,10 @@ int main(const int argc, char* argv[])
 
   optparse::Values& options = CommandLineParse::ParseArguments(parser.get(), argc, argv);
   std::vector<std::string> args = parser->args();
+
+  sb_pad_a_at[0] = options.get("pad_a_at");
+  sb_pad_a_at[1] = options.get("pad_a2_at");
+  sb_pad_a_dur = options.get("pad_a_frames");
 
   std::optional<std::string> save_state_path;
   if (options.is_set("save_state"))
@@ -400,6 +429,8 @@ int main(const int argc, char* argv[])
     // Headless scripted START (oracle harness): reach an input-gated screen before recording.
     sb_pad_start_at = options.get("pad_start_at");
     sb_pad_start_dur = options.get("pad_start_frames");
+    sb_pad_z_at = options.get("pad_z_at");
+    sb_pad_z_dur = options.get("pad_z_frames");
     auto& system = Core::System::GetInstance();
     fprintf(stderr, "[sb-fifo] armed: record %d frames to '%s' after %d fields (pad START @%d for %d)\n",
             s_frames, s_path.c_str(), s_after, sb_pad_start_at, sb_pad_start_dur);
@@ -452,6 +483,8 @@ int main(const int argc, char* argv[])
     // Reuse the scripted-START window so save-state-at can reach input-gated screens.
     sb_pad_start_at = options.get("pad_start_at");
     sb_pad_start_dur = options.get("pad_start_frames");
+    sb_pad_z_at = options.get("pad_z_at");
+    sb_pad_z_dur = options.get("pad_z_frames");
     auto& system = Core::System::GetInstance();
     // Ensure the destination directory exists (State::SaveAs does not mkdir).
     File::CreateFullPath(s_ss_path);
@@ -502,6 +535,8 @@ int main(const int argc, char* argv[])
     static bool s_ls_loaded = false;
     static int s_ls_loaded_field = 0;
     static bool s_ls_done = false;
+    sb_pad_z_at = options.get("pad_z_at");
+    sb_pad_z_dur = options.get("pad_z_frames");
     auto& system = Core::System::GetInstance();
     fprintf(stderr, "[sb-loadstate] armed: load '%s' at field %d, exit +%d fields\n",
             s_ls_path.c_str(), s_ls_at, s_ls_exit_after);

@@ -148,6 +148,10 @@ extern void (*sb_slot_zelda_fetch_vpb)(void* self, u16 voice_id, void* vpb);
 // sb_pad_cur_field is advanced once per VI field by MainNoGUI's vi_end_field hook.
 extern int sb_pad_start_at;    // first VI field to hold START (-1 = disabled)
 extern int sb_pad_start_dur;   // number of fields to hold it
+extern int sb_pad_z_at;        // first VI field to hold Z (-1 = disabled)
+extern int sb_pad_z_dur;       // number of fields to hold it
+extern int sb_pad_a_at[2];     // first VI field for each scripted A window
+extern int sb_pad_a_dur;       // number of fields to hold each A press
 extern int sb_pad_cur_field;   // current VI field (advanced by the NoGUI field hook)
 
 }  // extern "C"

@@ -25,6 +25,10 @@
 // SunbrightHooks.h). Set by DolphinNoGUI --pad-start-at / --pad-start-frames.
 int sb_pad_start_at = -1;
 int sb_pad_start_dur = 0;
+int sb_pad_z_at = -1;
+int sb_pad_z_dur = 0;
+int sb_pad_a_at[2] = {-1, -1};
+int sb_pad_a_dur = 0;
 int sb_pad_cur_field = 0;
 
 namespace SerialInterface
@@ -171,6 +175,20 @@ GCPadStatus CSIDevice_GCController::GetPadStatus()
   {
     pad_status.button |= PAD_BUTTON_START;
     pad_status.isConnected = true;
+  }
+  if (sb_pad_z_at >= 0 && sb_pad_cur_field >= sb_pad_z_at &&
+      sb_pad_cur_field < sb_pad_z_at + sb_pad_z_dur)
+  {
+    pad_status.button |= PAD_TRIGGER_Z;
+    pad_status.isConnected = true;
+  }
+  for (const int at : sb_pad_a_at)
+  {
+    if (at >= 0 && sb_pad_cur_field >= at && sb_pad_cur_field < at + sb_pad_a_dur)
+    {
+      pad_status.button |= PAD_BUTTON_A;
+      pad_status.isConnected = true;
+    }
   }
 
   return pad_status;
