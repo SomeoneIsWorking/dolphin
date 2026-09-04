@@ -5,10 +5,12 @@
 
 #include <algorithm>
 #include <array>
+#include <exception>
 #include <utility>
 
 #include "Common/Align.h"
 #include "Common/CommonTypes.h"
+#include "Common/Logging/Log.h"
 #include "Common/MemoryUtil.h"
 #include "Common/Thread.h"
 
@@ -19,6 +21,7 @@
 #include "Core/CoreTiming.h"
 #include "Core/HW/CPU.h"
 #include "Core/MemTools.h"
+#include "Core/PowerPC/GcnPortRuntime.h"
 #include "Core/PowerPC/MMU.h"
 #include "Core/PowerPC/PPCAnalyst.h"
 #include "Core/PowerPC/PowerPC.h"
@@ -119,7 +122,33 @@ JitBase::JitBase(Core::System& system)
 
 JitBase::~JitBase()
 {
+  if (m_gcnport_runtime)
+    m_gcnport_runtime->JitDestroyed();
   CPUThreadConfigCallback::RemoveConfigChangedCallback(m_registered_config_callback_id);
+}
+
+void JitBase::AttachGcnPortRuntime(PowerPC::GcnPort::RuntimeSession& runtime)
+{
+  if (m_gcnport_runtime && m_gcnport_runtime != &runtime)
+  {
+    ERROR_LOG_FMT(DYNA_REC, "gcnport runtime hard fault: a different session is already attached");
+    std::terminate();
+  }
+  if (m_gcnport_runtime == &runtime)
+    return;
+  m_gcnport_runtime = &runtime;
+  ClearCache();
+}
+
+void JitBase::DetachGcnPortRuntime(PowerPC::GcnPort::RuntimeSession& runtime)
+{
+  if (m_gcnport_runtime != &runtime)
+  {
+    ERROR_LOG_FMT(DYNA_REC, "gcnport runtime hard fault: detached session does not match owner");
+    std::terminate();
+  }
+  m_gcnport_runtime = nullptr;
+  ClearCache();
 }
 
 bool JitBase::DoesConfigNeedRefresh() const

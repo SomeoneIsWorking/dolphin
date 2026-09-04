@@ -168,6 +168,8 @@ public:
   void FallBackToInterpreter(UGeckoInstruction _inst);
   void DoNothing(UGeckoInstruction _inst);
   void HLEFunction(u32 hook_index);
+  void EmitGcnPortBlockEntry(u32 address);
+  void EmitGcnPortHook(u32 address);
 
   void DynaRunTable4(UGeckoInstruction inst);
   void DynaRunTable19(UGeckoInstruction inst);

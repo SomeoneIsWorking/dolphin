@@ -797,8 +797,8 @@ static bool CanCauseGatherPipeInterruptCheck(const CodeOp& op)
          op.opinfo->type == OpType::StorePS;
 }
 
-u32 PPCAnalyzer::Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer,
-                         std::size_t block_size) const
+u32 PPCAnalyzer::Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer, std::size_t block_size,
+                         const MayExitPredicate& external_may_exit) const
 {
   // Clear block stats
   *block->m_stats = {};
@@ -1002,7 +1002,9 @@ u32 PPCAnalyzer::Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer,
     const auto ppc_mode = power_pc.GetMode();
     const bool hle = !!HLE::TryReplaceFunction(ppc_symbol_db, op.address, ppc_mode);
     const bool breakpoint = power_pc.GetBreakPoints().IsAddressBreakPoint(op.address);
-    const bool may_exit_block = hle || breakpoint || op.canEndBlock || op.canCauseException;
+    const bool native_hook = external_may_exit && external_may_exit(op.address);
+    const bool may_exit_block =
+        hle || native_hook || breakpoint || op.canEndBlock || op.canCauseException;
 
     const bool opWantsFPRF = op.wantsFPRF;
     const bool opWantsCA = op.wantsCA;

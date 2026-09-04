@@ -31,6 +31,7 @@
 #include "Core/HW/ProcessorInterface.h"
 #include "Core/Host.h"
 #include "Core/PatchEngine.h"
+#include "Core/PowerPC/GcnPortRuntime.h"
 #include "Core/PowerPC/Interpreter/Interpreter.h"
 #include "Core/PowerPC/JitArm64/JitArm64_RegCache.h"
 #include "Core/PowerPC/JitCommon/ConstantPropagation.h"
@@ -326,6 +327,35 @@ void JitArm64::HLEFunction(u32 hook_index)
   fpr.Flush(FlushMode::All, ARM64Reg::INVALID_REG);
 
   ABI_CallFunction(&HLE::ExecuteFromJIT, js.compilerPC, hook_index, &m_system);
+}
+
+void JitArm64::EmitGcnPortBlockEntry(u32 address)
+{
+  PowerPC::GcnPort::RuntimeSession* const runtime = GetGcnPortRuntime();
+  if (!runtime)
+    return;
+
+  ABI_CallFunction(&PowerPC::GcnPort::RuntimeSession::RecordJitBlockExecutionFromJit, runtime,
+                   address);
+}
+
+void JitArm64::EmitGcnPortHook(u32 address)
+{
+  PowerPC::GcnPort::RuntimeSession* const runtime = GetGcnPortRuntime();
+  if (!runtime || !runtime->HasNativeHook(address))
+    return;
+
+  FlushCarry();
+  gpr.Flush(FlushMode::All, ARM64Reg::INVALID_REG);
+  fpr.Flush(FlushMode::All, ARM64Reg::INVALID_REG);
+  MOVI2R(DISPATCHER_PC, address);
+  STR(IndexType::Unsigned, DISPATCHER_PC, PPC_REG, PPCSTATE_OFF(pc));
+  ABI_CallFunction(&PowerPC::GcnPort::RuntimeSession::RunHookFromJit, runtime, address);
+
+  const FixupBranch run_original = CBNZ(ARM64Reg::W0);
+  LDR(IndexType::Unsigned, DISPATCHER_PC, PPC_REG, PPCSTATE_OFF(pc));
+  WriteExit(DISPATCHER_PC);
+  SetJumpTarget(run_original);
 }
 
 void JitArm64::DoNothing(UGeckoInstruction inst)
@@ -1013,7 +1043,11 @@ void JitArm64::Jit(u32 em_address, bool clear_cache_and_retry_on_failure)
   // Analyze the block, collect all instructions it is made of (including inlining,
   // if that is enabled), reorder instructions for optimal performance, and join joinable
   // instructions.
-  const u32 nextPC = analyzer.Analyze(em_address, &code_block, &m_code_buffer, block_size);
+  const auto* const gcnport_runtime = GetGcnPortRuntime();
+  const u32 nextPC = analyzer.Analyze(
+      em_address, &code_block, &m_code_buffer, block_size, [gcnport_runtime](u32 address) {
+        return gcnport_runtime && gcnport_runtime->HasNativeHook(address);
+      });
 
   if (code_block.m_memory_exception)
   {
@@ -1058,6 +1092,8 @@ void JitArm64::Jit(u32 em_address, bool clear_cache_and_retry_on_failure)
       b->far_end = far_end;
 
       blocks.FinalizeBlock(*b, jo.enableBlocklink, code_block, m_code_buffer);
+      if (PowerPC::GcnPort::RuntimeSession* const runtime = GetGcnPortRuntime())
+        runtime->RecordJitBlockCompiled(em_address);
 
 #ifdef JIT_LOG_GENERATED_CODE
       LogGeneratedCode();
@@ -1197,6 +1233,8 @@ bool JitArm64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
     }
   }
 
+  EmitGcnPortBlockEntry(em_address);
+
   gpr.Start(js.gpa);
   fpr.Start(js.fpa);
 
@@ -1289,6 +1327,7 @@ bool JitArm64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
       }
     }
 
+    EmitGcnPortHook(op.address);
     if (HandleFunctionHooking(op.address))
       break;
 
