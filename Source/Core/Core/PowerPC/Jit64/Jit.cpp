@@ -34,6 +34,7 @@
 #include "Core/Host.h"
 #include "Core/MachineContext.h"
 #include "Core/PatchEngine.h"
+#include "Core/PowerPC/GcnPortRuntime.h"
 #include "Core/PowerPC/Interpreter/Interpreter.h"
 #include "Core/PowerPC/Jit64/JitAsm.h"
 #include "Core/PowerPC/Jit64/RegCache/JitRegCache.h"
@@ -421,6 +422,40 @@ void Jit64::HLEFunction(u32 hook_index)
   ABI_PushRegistersAndAdjustStack({}, 0);
   ABI_CallFunctionCCP(HLE::ExecuteFromJIT, js.compilerPC, hook_index, &m_system);
   ABI_PopRegistersAndAdjustStack({}, 0);
+}
+
+void Jit64::EmitGcnPortBlockEntry(u32 address)
+{
+  PowerPC::GcnPort::RuntimeSession* const runtime = GetGcnPortRuntime();
+  if (!runtime)
+    return;
+
+  const BitSet32 registers_in_use = CallerSavedRegistersInUse();
+  ABI_PushRegistersAndAdjustStack(registers_in_use, 0);
+  ABI_CallFunctionPC(&PowerPC::GcnPort::RuntimeSession::RecordJitBlockExecutionFromJit, runtime,
+                     address);
+  ABI_PopRegistersAndAdjustStack(registers_in_use, 0);
+}
+
+void Jit64::EmitGcnPortHook(u32 address)
+{
+  PowerPC::GcnPort::RuntimeSession* const runtime = GetGcnPortRuntime();
+  if (!runtime || !runtime->HasNativeHook(address))
+    return;
+
+  FlushCarry();
+  gpr.Flush();
+  fpr.Flush();
+  MOV(32, PPCSTATE(pc), Imm32(address));
+  ABI_PushRegistersAndAdjustStack({}, 0);
+  ABI_CallFunctionPC(&PowerPC::GcnPort::RuntimeSession::RunHookFromJit, runtime, address);
+  ABI_PopRegistersAndAdjustStack({}, 0);
+
+  TEST(8, R(ABI_RETURN), R(ABI_RETURN));
+  const FixupBranch run_original = J_CC(CC_NZ);
+  MOV(32, R(RSCRATCH), PPCSTATE(pc));
+  WriteExitDestInRSCRATCH();
+  SetJumpTarget(run_original);
 }
 
 void Jit64::DoNothing(UGeckoInstruction _inst)
@@ -825,7 +860,11 @@ void Jit64::Jit(u32 em_address, bool clear_cache_and_retry_on_failure)
   // Analyze the block, collect all instructions it is made of (including inlining,
   // if that is enabled), reorder instructions for optimal performance, and join joinable
   // instructions.
-  const u32 nextPC = analyzer.Analyze(em_address, &code_block, &m_code_buffer, block_size);
+  const auto* const gcnport_runtime = GetGcnPortRuntime();
+  const u32 nextPC = analyzer.Analyze(
+      em_address, &code_block, &m_code_buffer, block_size, [gcnport_runtime](u32 address) {
+        return gcnport_runtime && gcnport_runtime->HasNativeHook(address);
+      });
 
   if (code_block.m_memory_exception)
   {
@@ -864,6 +903,8 @@ void Jit64::Jit(u32 em_address, bool clear_cache_and_retry_on_failure)
       b->far_end = far_end;
 
       blocks.FinalizeBlock(*b, jo.enableBlocklink, code_block, m_code_buffer);
+      if (PowerPC::GcnPort::RuntimeSession* const runtime = GetGcnPortRuntime())
+        runtime->RecordJitBlockCompiled(em_address);
 
 #ifdef JIT_LOG_GENERATED_CODE
       LogGeneratedCode();
@@ -985,6 +1026,8 @@ bool Jit64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
     }
   }
 
+  EmitGcnPortBlockEntry(em_address);
+
   if (!js.noSpeculativeConstantsAddresses.contains(js.blockStart))
   {
     IntializeSpeculativeConstants();
@@ -1062,6 +1105,7 @@ bool Jit64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
       }
     }
 
+    EmitGcnPortHook(op.address);
     if (HandleFunctionHooking(op.address))
       break;
 

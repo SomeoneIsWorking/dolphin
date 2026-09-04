@@ -36,6 +36,10 @@ class MMU;
 struct PowerPCState;
 }  // namespace PowerPC
 class PPCSymbolDB;
+namespace PowerPC::GcnPort
+{
+class RuntimeSession;
+}
 
 // #define JIT_LOG_GENERATED_CODE  // Enables logging of generated code
 // #define JIT_LOG_GPR             // Enables logging of the PPC general purpose regs
@@ -229,6 +233,14 @@ public:
   virtual bool HandleFault(uintptr_t access_address, SContext* ctx) = 0;
   bool HandleStackFault();
 
+  void AttachGcnPortRuntime(PowerPC::GcnPort::RuntimeSession& runtime);
+  void DetachGcnPortRuntime(PowerPC::GcnPort::RuntimeSession& runtime);
+  [[nodiscard]] bool HasGcnPortRuntime() const { return m_gcnport_runtime != nullptr; }
+  [[nodiscard]] PowerPC::GcnPort::RuntimeSession* GetGcnPortRuntime() const
+  {
+    return m_gcnport_runtime;
+  }
+
   static constexpr std::size_t code_buffer_size = 32000;
 
   // This should probably be removed from public:
@@ -240,6 +252,9 @@ public:
   PowerPC::MMU& m_mmu;
   Core::BranchWatch& m_branch_watch;
   PPCSymbolDB& m_ppc_symbol_db;
+
+private:
+  PowerPC::GcnPort::RuntimeSession* m_gcnport_runtime = nullptr;
 };
 
 void JitTrampoline(JitBase& jit, u32 em_address);

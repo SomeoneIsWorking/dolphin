@@ -551,6 +551,8 @@ add_library(core
   PowerPC/JitInterface.h
   PowerPC/GDBStub.cpp
   PowerPC/GDBStub.h
+  PowerPC/GcnPortRuntime.cpp
+  PowerPC/GcnPortRuntime.h
   PowerPC/MMU.cpp
   PowerPC/MMU.h
   PowerPC/PowerPC.cpp

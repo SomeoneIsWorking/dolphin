@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <functional>
 #include <vector>
 
 #include "Common/BitSet.h"
@@ -181,7 +182,9 @@ public:
   void SetBranchFollowingEnabled(bool enabled) { m_enable_branch_following = enabled; }
   void SetFloatExceptionsEnabled(bool enabled) { m_enable_float_exceptions = enabled; }
   void SetDivByZeroExceptionsEnabled(bool enabled) { m_enable_div_by_zero_exceptions = enabled; }
-  u32 Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer, std::size_t block_size) const;
+  using MayExitPredicate = std::function<bool(u32)>;
+  u32 Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer, std::size_t block_size,
+              const MayExitPredicate& external_may_exit = {}) const;
 
 private:
   enum class ReorderType
