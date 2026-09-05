@@ -278,12 +278,12 @@ if(MSVC)
   add_compile_options(/utf-8)
 
   # Ignore warnings in external headers
-  add_compile_options(/external:anglebrackets)
+  check_and_add_flag(EXTERNAL_ANGLEBRACKETS /external:anglebrackets)
   add_compile_options(/external:W0)
-  add_compile_options(/external:templates-)
+  check_and_add_flag(EXTERNAL_TEMPLATES /external:templates-)
 
   # Request deterministic builds
-  add_compile_options(/experimental:deterministic)
+  check_and_add_flag(DETERMINISTIC /experimental:deterministic)
   add_link_options(/experimental:deterministic)
 
   # Enable function-level linking
@@ -296,7 +296,10 @@ if(MSVC)
   # Note: In msbuild build, this gets set by msbuild by default
   add_compile_options(/Zc:inline)
   # Fix various other non-conformant behaviors
-  add_compile_options(/Zc:__cplusplus,enumTypes,externConstexpr,preprocessor,templateScope,throwingNew)
+  # clang-cl accepts the MSVC driver interface but not every MSVC conformance
+  # switch. Probe each language separately before passing these to external C
+  # libraries as well as our C++ targets.
+  check_and_add_flag(CONFORMANCE /Zc:__cplusplus,enumTypes,externConstexpr,preprocessor,templateScope,throwingNew)
   # Enforce strict volatile semantics as per ISO C++
   add_compile_options(/volatile:iso)
 
