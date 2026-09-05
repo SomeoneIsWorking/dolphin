@@ -338,7 +338,9 @@ bool Rename(DirectIOFile& file, const std::string& source_path [[maybe_unused]],
   const auto dest_name_byte_size = DWORD(dest_name.size() * sizeof(WCHAR));
   FILE_RENAME_INFO info{
       .ReplaceIfExists = TRUE,
+      .RootDirectory = nullptr,
       .FileNameLength = dest_name_byte_size,  // The size in bytes, not including null termination.
+      .FileName = {},
   };
   constexpr auto filename_struct_offset = offsetof(FILE_RENAME_INFO, FileName);
   Common::UniqueBuffer<u8> buffer(filename_struct_offset + dest_name_byte_size + sizeof(WCHAR));
