@@ -10,6 +10,10 @@ add_library(use_pch INTERFACE)
 
 add_library(build_pch pch.h pch.cpp)
 
+# Both /Yc and consumers' /FI look up pch.h independently of the source file.
+# Export the header's owner so neither lookup relies on MSVC's include fallback.
+target_include_directories(build_pch PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+
 # fmt/format.h is included in the PCH
 target_link_libraries(build_pch PUBLIC fmt::fmt)
 
