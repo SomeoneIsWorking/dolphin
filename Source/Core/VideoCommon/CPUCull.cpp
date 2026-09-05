@@ -5,6 +5,7 @@
 
 #include "Common/Assert.h"
 #include "Common/CPUDetect.h"
+#include "Common/Intrinsics.h"
 #include "Common/MathUtil.h"
 #include "Common/MemoryUtil.h"
 #include "Core/System.h"

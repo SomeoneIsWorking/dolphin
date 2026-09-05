@@ -19,14 +19,14 @@
 #error This file is meant to be used by CPUCull.cpp only!
 #endif
 
-#if defined(__GNUC__) && defined(USE_FMA) && !(defined(__AVX__) && defined(__FMA__))
-#define ATTR_TARGET __attribute__((target("avx,fma")))
-#elif defined(__GNUC__) && defined(USE_AVX) && !defined(__AVX__)
-#define ATTR_TARGET __attribute__((target("avx")))
-#elif defined(__GNUC__) && defined(USE_SSE41) && !defined(__SSE4_1__)
-#define ATTR_TARGET __attribute__((target("sse4.1")))
-#elif defined(__GNUC__) && defined(USE_SSE3) && !defined(__SSE3__)
-#define ATTR_TARGET __attribute__((target("sse3")))
+#if defined(USE_FMA) && !(defined(__AVX__) && defined(__FMA__))
+#define ATTR_TARGET FUNCTION_TARGET("avx,fma")
+#elif defined(USE_AVX) && !defined(__AVX__)
+#define ATTR_TARGET FUNCTION_TARGET("avx")
+#elif defined(USE_SSE41) && !defined(__SSE4_1__)
+#define ATTR_TARGET FUNCTION_TARGET("sse4.1")
+#elif defined(USE_SSE3) && !defined(__SSE3__)
+#define ATTR_TARGET FUNCTION_TARGET("sse3")
 #else
 #define ATTR_TARGET
 #endif
