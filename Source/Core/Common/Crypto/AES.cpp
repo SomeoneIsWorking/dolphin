@@ -10,6 +10,7 @@
 
 #include "Common/Assert.h"
 #include "Common/CPUDetect.h"
+#include "Common/Intrinsics.h"
 
 #ifdef _MSC_VER
 #include <intrin.h>
@@ -20,12 +21,6 @@
 #include <arm_acle.h>
 #include <arm_neon.h>
 #endif
-#endif
-
-#ifdef _MSC_VER
-#define ATTRIBUTE_TARGET(x)
-#else
-#define ATTRIBUTE_TARGET(x) [[gnu::target(x)]]
 #endif
 
 namespace Common::AES
@@ -97,7 +92,7 @@ class ContextAESNI final : public Context
   }
 
   template <size_t RoundIdx>
-  ATTRIBUTE_TARGET("aes")
+  FUNCTION_TARGET("aes")
   inline constexpr void StoreRoundKey(__m128i rk)
   {
     if constexpr (AesMode == Mode::Encrypt)
@@ -113,7 +108,7 @@ class ContextAESNI final : public Context
   }
 
   template <size_t RoundIdx, int Rcon>
-  ATTRIBUTE_TARGET("aes")
+  FUNCTION_TARGET("aes")
   inline constexpr __m128i Aes128Keygen(__m128i rk)
   {
     rk = Aes128KeygenAssistFinish(rk, _mm_aeskeygenassist_si128(rk, Rcon));
@@ -138,7 +133,7 @@ public:
     Aes128Keygen<10, 0x36>(rk);
   }
 
-  ATTRIBUTE_TARGET("aes")
+  FUNCTION_TARGET("aes")
   inline void CryptBlock(__m128i* iv, const u8* buf_in, u8* buf_out) const
   {
     __m128i block = _mm_loadu_si128((const __m128i*)buf_in);
@@ -172,7 +167,7 @@ public:
 
   // Takes advantage of instruction pipelining to parallelize.
   template <size_t NumBlocks>
-  ATTRIBUTE_TARGET("aes")
+  FUNCTION_TARGET("aes")
   inline void DecryptPipelined(__m128i* iv, const u8* buf_in, u8* buf_out) const
   {
     constexpr size_t Depth = NumBlocks;

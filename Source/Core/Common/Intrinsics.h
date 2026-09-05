@@ -3,6 +3,14 @@
 
 #pragma once
 
+// clang-cl defines _MSC_VER but still requires per-function instruction-set
+// attribution. Callers must retain runtime CPU checks before entering these functions.
+#if defined(__GNUC__) || defined(__clang__)
+#define FUNCTION_TARGET(features) [[gnu::target(features)]]
+#else
+#define FUNCTION_TARGET(features)
+#endif
+
 #if defined(_M_X86_64)
 
 /**
@@ -28,16 +36,16 @@
 
 #include <x86intrin.h>
 #ifndef __SSE4_2__
-#define FUNCTION_TARGET_SSE42 [[gnu::target("sse4.2")]]
+#define FUNCTION_TARGET_SSE42 FUNCTION_TARGET("sse4.2")
 #endif
 #ifndef __SSE4_1__
-#define FUNCTION_TARGET_SSR41 [[gnu::target("sse4.1")]]
+#define FUNCTION_TARGET_SSR41 FUNCTION_TARGET("sse4.1")
 #endif
 #ifndef __SSSE3__
-#define FUNCTION_TARGET_SSSE3 [[gnu::target("ssse3")]]
+#define FUNCTION_TARGET_SSSE3 FUNCTION_TARGET("ssse3")
 #endif
 #ifndef __SSE3__
-#define FUNCTION_TARGET_SSE3 [[gnu::target("sse3")]]
+#define FUNCTION_TARGET_SSE3 FUNCTION_TARGET("sse3")
 #endif
 
 #elif defined(_MSC_VER) || defined(__INTEL_COMPILER)
