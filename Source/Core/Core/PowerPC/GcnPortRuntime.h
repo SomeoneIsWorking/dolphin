@@ -162,10 +162,22 @@ struct BootResult
 //
 // The process may boot at most one image at a time; a second call before ShutdownBootedImage
 // returns a failed BootResult instead of silently reinitializing global Dolphin state.
+//
+// `apply_gamecube_os_init` selects the exact, title-neutral GameCube MSR/HID/BAT register setup
+// every retail title's real BS2/IPL establishes before jumping to a disc's DOL entry point (see
+// CBoot::SetupGameCubeBS2Registers, which reuses CBoot::EmulatedBS2_GC's own SetupMSR/SetupHID/
+// SetupBAT). It defaults to false so an existing caller booting a small synthetic PPC test program
+// that does not rely on effective-address translation is unaffected. A real GameCube DOL's own
+// code assumes this configuration is already in place: with MSR.DR/IR left at their power-on-reset
+// value of 0 (real mode), PowerPC treats an ordinary effective address like 0x80xxxxxx as a
+// physical address, landing far outside the console's 24 MiB of RAM instead of translating back
+// down into it, so a raw DOL boot without this flag reliably faults on its first EA-dependent
+// access.
 [[nodiscard]] BootResult BootAuthenticatedImage(Core::System& system,
                                                  const ExecutionIdentity& identity,
                                                  std::span<const u8> image, u32 load_address,
-                                                 u32 entry_point);
+                                                 u32 entry_point,
+                                                 bool apply_gamecube_os_init = false);
 
 // Reverses BootAuthenticatedImage. Must be called before the process may boot another image.
 void ShutdownBootedImage(Core::System& system) noexcept;

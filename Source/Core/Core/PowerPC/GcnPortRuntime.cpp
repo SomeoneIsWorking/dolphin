@@ -9,6 +9,7 @@
 
 #include "Common/Config/Config.h"
 #include "Common/Logging/Log.h"
+#include "Core/Boot/Boot.h"
 #include "Core/ConfigManager.h"
 #include "Core/Core.h"
 #include "Core/CoreTiming.h"
@@ -103,7 +104,8 @@ HookResult HookResult::RunOriginalOnce()
 }
 
 BootResult BootAuthenticatedImage(Core::System& system, const ExecutionIdentity& identity,
-                                   std::span<const u8> image, u32 load_address, u32 entry_point)
+                                   std::span<const u8> image, u32 load_address, u32 entry_point,
+                                   bool apply_gamecube_os_init)
 {
   if (!identity.image.IsAuthenticated())
     return {.ok = false, .detail = "image identity is not authenticated"};
@@ -135,6 +137,9 @@ BootResult BootAuthenticatedImage(Core::System& system, const ExecutionIdentity&
   system.GetCoreTiming().Init();
   system.GetCPU().Init(PowerPC::DefaultCPUCore());
   system.GetMemory().CopyToEmu(load_address, image.data(), image.size());
+
+  if (apply_gamecube_os_init)
+    CBoot::SetupGameCubeBS2Registers(system);
 
   auto& state = system.GetPPCState();
   state.pc = entry_point;
