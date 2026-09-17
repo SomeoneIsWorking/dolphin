@@ -123,11 +123,10 @@ void DeviceChangeNotification::Register(CallbackType callback)
   Unregister();
   m_callback = std::move(callback);
 
-  CM_NOTIFY_FILTER notify_filter{
-      .cbSize = sizeof(notify_filter),
-      .FilterType = CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE,
-      .u{.DeviceInterface{.ClassGuid = GUID_DEVINTERFACE_HID}},
-  };
+  CM_NOTIFY_FILTER notify_filter{};
+  notify_filter.cbSize = sizeof(notify_filter);
+  notify_filter.FilterType = CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE;
+  notify_filter.u.DeviceInterface.ClassGuid = GUID_DEVINTERFACE_HID;
   const CONFIGRET cfg_rv =
       CM_Register_Notification(&notify_filter, &m_callback, OnDevicesChanged, &m_notify_handle);
   if (cfg_rv != CR_SUCCESS)

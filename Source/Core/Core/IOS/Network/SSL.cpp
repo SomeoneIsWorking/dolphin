@@ -17,6 +17,7 @@
 #include "Core/Config/MainSettings.h"
 #include "Core/Core.h"
 #include "Core/HW/Memmap.h"
+#include "Core/IOS/Network/SSLTransport.h"
 #include "Core/IOS/Network/Socket.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/System.h"
@@ -54,17 +55,16 @@ namespace
 int SSLSendWithoutSNI(void* ctx, const unsigned char* buf, size_t len)
 {
   auto* ssl = static_cast<WII_SSL*>(ctx);
-  auto* fd = &ssl->hostfd;
 
   if (ssl->ctx.state == MBEDTLS_SSL_SERVER_HELLO)
     mbedtls_ssl_set_hostname(&ssl->ctx, ssl->hostname.c_str());
-  const int ret = mbedtls_net_send(fd, buf, len);
+  const int ret = SSLTransport::Send(ssl->hostfd, buf, len);
 
   // Log raw SSL packets if we don't dump unencrypted SSL writes
   if (!Config::Get(Config::MAIN_NETWORK_SSL_DUMP_WRITE) && ret > 0)
   {
     Core::System::GetInstance().GetPowerPC().GetDebugInterface().NetworkLogger()->LogWrite(
-        buf, ret, *fd, nullptr);
+        buf, ret, ssl->hostfd, nullptr);
   }
 
   return ret;
@@ -73,14 +73,13 @@ int SSLSendWithoutSNI(void* ctx, const unsigned char* buf, size_t len)
 int SSLRecv(void* ctx, unsigned char* buf, size_t len)
 {
   auto* ssl = static_cast<WII_SSL*>(ctx);
-  auto* fd = &ssl->hostfd;
-  const int ret = mbedtls_net_recv(fd, buf, len);
+  const int ret = SSLTransport::Receive(ssl->hostfd, buf, len);
 
   // Log raw SSL packets if we don't dump unencrypted SSL reads
   if (!Config::Get(Config::MAIN_NETWORK_SSL_DUMP_READ) && ret > 0)
   {
     Core::System::GetInstance().GetPowerPC().GetDebugInterface().NetworkLogger()->LogRead(
-        buf, ret, *fd, nullptr);
+        buf, ret, ssl->hostfd, nullptr);
   }
 
   return ret;

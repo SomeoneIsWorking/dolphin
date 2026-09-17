@@ -91,7 +91,8 @@ bool DXContext::SupportsTextureFormat(DXGI_FORMAT format)
   constexpr u32 required = D3D12_FORMAT_SUPPORT1_TEXTURE2D | D3D12_FORMAT_SUPPORT1_TEXTURECUBE |
                            D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE;
 
-  D3D12_FEATURE_DATA_FORMAT_SUPPORT support = {format};
+  D3D12_FEATURE_DATA_FORMAT_SUPPORT support = {format, D3D12_FORMAT_SUPPORT1_NONE,
+                                               D3D12_FORMAT_SUPPORT2_NONE};
   return SUCCEEDED(m_device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support,
                                                  sizeof(support))) &&
          (support.Support1 & required) == required;
@@ -212,7 +213,7 @@ bool DXContext::CreateCommandQueue()
 {
   const D3D12_COMMAND_QUEUE_DESC queue_desc = {D3D12_COMMAND_LIST_TYPE_DIRECT,
                                                D3D12_COMMAND_QUEUE_PRIORITY_NORMAL,
-                                               D3D12_COMMAND_QUEUE_FLAG_NONE};
+                                               D3D12_COMMAND_QUEUE_FLAG_NONE, 0};
   HRESULT hr = m_device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&m_command_queue));
   ASSERT_MSG(VIDEO, SUCCEEDED(hr), "Failed to create command queue: {}", DX12HRWrap(hr));
   return SUCCEEDED(hr);
@@ -254,8 +255,10 @@ bool DXContext::CreateDescriptorHeaps()
 
   // Allocate null SRV descriptor for unbound textures.
   constexpr D3D12_SHADER_RESOURCE_VIEW_DESC null_srv_desc = {
-      DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_SRV_DIMENSION_TEXTURE2D,
-      D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING};
+      DXGI_FORMAT_R8G8B8A8_UNORM,
+      D3D12_SRV_DIMENSION_TEXTURE2D,
+      D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+      {}};
 
   if (!m_descriptor_heap_manager.Allocate(&m_null_srv_descriptor))
   {

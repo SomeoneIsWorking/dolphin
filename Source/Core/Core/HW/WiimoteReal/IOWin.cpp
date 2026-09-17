@@ -120,7 +120,8 @@ static std::optional<USBUtils::DeviceInfo> GetDeviceInfo(const WCHAR* hid_iface)
     return std::nullopt;
   }
 
-  HIDD_ATTRIBUTES attributes{.Size = sizeof(attributes)};
+  HIDD_ATTRIBUTES attributes{};
+  attributes.Size = sizeof(attributes);
   if (!HidD_GetAttributes(dev_handle, &attributes))
   {
     ERROR_LOG_FMT(WIIMOTE, "HidD_GetAttributes");
@@ -231,10 +232,12 @@ void EnumerateBluetoothDevices(u8 inquiry_length, auto&& enumeration_callback)
       .fReturnConnected = true,
       .fIssueInquiry = inquiry_length > 0,
       .cTimeoutMultiplier = inquiry_length,
+      .hRadio = nullptr,
   };
 
   EnumerateRadios([&](HANDLE radio_handle) {
-    BLUETOOTH_RADIO_INFO radio_info{.dwSize = sizeof(radio_info)};
+    BLUETOOTH_RADIO_INFO radio_info{};
+    radio_info.dwSize = sizeof(radio_info);
     if (BluetoothGetRadioInfo(radio_handle, &radio_info) != ERROR_SUCCESS)
     {
       ERROR_LOG_FMT(WIIMOTE, "BluetoothGetRadioInfo");
@@ -243,7 +246,8 @@ void EnumerateBluetoothDevices(u8 inquiry_length, auto&& enumeration_callback)
 
     search_params.hRadio = radio_handle;
 
-    BLUETOOTH_DEVICE_INFO btdi{.dwSize = sizeof(btdi)};
+    BLUETOOTH_DEVICE_INFO btdi{};
+    btdi.dwSize = sizeof(btdi);
     const auto find_device = BluetoothFindFirstDevice(&search_params, &btdi);
     if (find_device == nullptr)
     {

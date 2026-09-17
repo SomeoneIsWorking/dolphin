@@ -4,12 +4,14 @@
 #pragma once
 
 #include <cstddef>
+#include <limits>
 #include <memory>
 #include <type_traits>
 #include <vector>
 
 #include "Common/Arm64Emitter.h"
 #include "Common/CommonTypes.h"
+#include "Common/MemberOffset.h"
 #include "Core/PowerPC/Gekko.h"
 #include "Core/PowerPC/PPCAnalyst.h"
 #include "Core/PowerPC/PowerPC.h"
@@ -25,17 +27,8 @@ constexpr Arm64Gen::ARM64Reg PPC_REG = Arm64Gen::ARM64Reg::X29;
 // PC register when calling the dispatcher
 constexpr Arm64Gen::ARM64Reg DISPATCHER_PC = Arm64Gen::ARM64Reg::W26;
 
-#ifdef __GNUC__
-#define PPCSTATE_OFF(elem)                                                                         \
-  ([]() consteval {                                                                                \
-    _Pragma("GCC diagnostic push")                                                                 \
-        _Pragma("GCC diagnostic ignored \"-Winvalid-offsetof\"") return offsetof(                  \
-            PowerPC::PowerPCState, elem);                                                          \
-    _Pragma("GCC diagnostic pop")                                                                  \
-  }())
-#else
-#define PPCSTATE_OFF(elem) (offsetof(PowerPC::PowerPCState, elem))
-#endif
+static_assert(sizeof(PowerPC::PowerPCState) <= std::numeric_limits<u32>::max());
+#define PPCSTATE_OFF(elem) static_cast<u32>(Common::MemberOffset(GetPPCState(), GetPPCState().elem))
 
 #define PPCSTATE_OFF_ARRAY(elem, i)                                                                \
   (PPCSTATE_OFF(elem[0]) + sizeof(PowerPC::PowerPCState::elem[0]) * (i))
@@ -51,12 +44,6 @@ constexpr Arm64Gen::ARM64Reg DISPATCHER_PC = Arm64Gen::ARM64Reg::W26;
 static_assert(std::is_same_v<decltype(PowerPC::PowerPCState::ps[0]), PowerPC::PairedSingle&>);
 #define PPCSTATE_OFF_PS0(i) (PPCSTATE_OFF_ARRAY(ps, i) + offsetof(PowerPC::PairedSingle, ps0))
 #define PPCSTATE_OFF_PS1(i) (PPCSTATE_OFF_ARRAY(ps, i) + offsetof(PowerPC::PairedSingle, ps1))
-
-// Some asserts to make sure we will be able to load everything
-static_assert(PPCSTATE_OFF_SPR(1023) <= 16380, "LDR(32bit) can't reach the last SPR");
-static_assert((PPCSTATE_OFF_PS0(0) % 8) == 0, "LDR(64bit VFP) requires FPRs to be 8 byte aligned");
-static_assert(PPCSTATE_OFF(xer_ca) < 4096, "STRB can't store xer_ca!");
-static_assert(PPCSTATE_OFF(xer_so_ov) < 4096, "STRB can't store xer_so_ov!");
 
 enum class RegType
 {
@@ -159,6 +146,7 @@ public:
   virtual ~Arm64RegCache() = default;
 
   void Init(JitArm64* jit);
+  const PowerPC::PowerPCState& GetPPCState() const;
 
   virtual void Start(PPCAnalyst::BlockRegStats& stats) {}
   void DiscardRegisters(BitSet32 regs);

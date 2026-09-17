@@ -74,7 +74,7 @@ static Common::DynamicLibrary s_security_framework;
 using DolSecTranslocateIsTranslocatedURL = Boolean (*)(CFURLRef path, bool* isTranslocated,
                                                        CFErrorRef* __nullable error);
 using DolSecTranslocateCreateOriginalPathForURL = CFURLRef
-__nullable (*)(CFURLRef translocatedPath, CFErrorRef* __nullable error);
+    __nullable (*)(CFURLRef translocatedPath, CFErrorRef* __nullable error);
 
 static DolSecTranslocateIsTranslocatedURL s_is_translocated_url;
 static DolSecTranslocateCreateOriginalPathForURL s_create_orig_path;
@@ -448,6 +448,7 @@ FSTEntry ScanDirectoryTree(const std::string& directory, bool recursive)
         .size = entry.is_directory() || entry.is_fifo() ? 0 : entry.file_size(),
         .physicalName = path_to_physical_name(entry.path()),
         .virtualName = PathToString(entry.path().filename()),
+        .children = {},
     };
   };
 

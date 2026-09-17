@@ -1,6 +1,8 @@
 // Copyright 2008 Dolphin Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdint>
+
 #include "Common/CommonTypes.h"
 #include "Common/EnumMap.h"
 #include "Common/MsgHandler.h"
@@ -38,12 +40,13 @@ static void SetPointer(ShaderAttrib attrib, u32 stride, const AttributeFormat& f
     return;
 
   glEnableVertexAttribArray(static_cast<GLuint>(attrib));
+  const void* offset = reinterpret_cast<const void*>(static_cast<std::uintptr_t>(format.offset));
   if (format.integer)
     glVertexAttribIPointer(static_cast<GLuint>(attrib), format.components, VarToGL(format.type),
-                           stride, (u8*)nullptr + format.offset);
+                           stride, offset);
   else
     glVertexAttribPointer(static_cast<GLuint>(attrib), format.components, VarToGL(format.type),
-                          true, stride, (u8*)nullptr + format.offset);
+                          true, stride, offset);
 }
 
 GLVertexFormat::GLVertexFormat(const PortableVertexDeclaration& vtx_decl)

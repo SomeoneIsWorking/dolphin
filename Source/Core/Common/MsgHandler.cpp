@@ -5,6 +5,7 @@
 
 #include <cstdlib>
 #include <string>
+#include <utility>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -90,9 +91,9 @@ Log::LogLevel GetMessageAlertLogLevel(const MsgType style)
 
 // Select which of these functions that are used for message boxes. If
 // Qt is enabled we will use QtMsgAlertHandler() that is defined in Main.cpp
-void RegisterMsgAlertHandler(MsgAlertHandler handler)
+MsgAlertHandler RegisterMsgAlertHandler(MsgAlertHandler handler)
 {
-  s_msg_handler = handler;
+  return std::exchange(s_msg_handler, handler);
 }
 
 // Select translation function.

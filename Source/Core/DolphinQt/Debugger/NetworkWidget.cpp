@@ -36,9 +36,9 @@
 
 namespace
 {
-QTableWidgetItem* GetSocketDomain(s32 host_fd)
+QTableWidgetItem* GetSocketDomain(Common::SocketHandle host_fd)
 {
-  if (host_fd < 0)
+  if (host_fd == Common::INVALID_SOCKET_HANDLE)
     return new QTableWidgetItem();
 
   sockaddr sa;
@@ -58,9 +58,9 @@ QTableWidgetItem* GetSocketDomain(s32 host_fd)
   }
 }
 
-QTableWidgetItem* GetSocketType(s32 host_fd)
+QTableWidgetItem* GetSocketType(Common::SocketHandle host_fd)
 {
-  if (host_fd < 0)
+  if (host_fd == Common::INVALID_SOCKET_HANDLE)
     return new QTableWidgetItem();
 
   int so_type;
@@ -81,9 +81,9 @@ QTableWidgetItem* GetSocketType(s32 host_fd)
   }
 }
 
-QTableWidgetItem* GetSocketState(s32 host_fd)
+QTableWidgetItem* GetSocketState(Common::SocketHandle host_fd)
 {
-  if (host_fd < 0)
+  if (host_fd == Common::INVALID_SOCKET_HANDLE)
     return new QTableWidgetItem();
 
   sockaddr_in peer_addr;
@@ -102,7 +102,7 @@ QTableWidgetItem* GetSocketState(s32 host_fd)
 
 QTableWidgetItem* GetSocketBlocking(const IOS::HLE::WiiSockMan& socket_manager, s32 wii_fd)
 {
-  if (socket_manager.GetHostSocket(wii_fd) < 0)
+  if (socket_manager.GetHostSocket(wii_fd) == Common::INVALID_SOCKET_HANDLE)
     return new QTableWidgetItem();
   const bool is_blocking = socket_manager.IsSocketBlocking(wii_fd);
   return new QTableWidgetItem(is_blocking ? QTableWidget::tr("Yes") : QTableWidget::tr("No"));
@@ -118,9 +118,9 @@ QString GetAddressAndPort(const sockaddr_in& addr)
   return QStringLiteral("%1:%2").arg(QString::fromLatin1(addr_str)).arg(ntohs(addr.sin_port));
 }
 
-QTableWidgetItem* GetSocketName(s32 host_fd)
+QTableWidgetItem* GetSocketName(Common::SocketHandle host_fd)
 {
-  if (host_fd < 0)
+  if (host_fd == Common::INVALID_SOCKET_HANDLE)
     return new QTableWidgetItem();
 
   sockaddr_in sock_addr;
@@ -144,10 +144,10 @@ QTableWidgetItem* GetSocketName(s32 host_fd)
   return new QTableWidgetItem(QStringLiteral("%1->%2").arg(sock_name).arg(peer_name));
 }
 
-QTableWidgetItem* GetSocketRedirections(s32 host_fd,
+QTableWidgetItem* GetSocketRedirections(Common::SocketHandle host_fd,
                                         const AMMediaboard::IPRedirections& ip_redirections)
 {
-  if (host_fd < 0 || ip_redirections.empty())
+  if (host_fd == Common::INVALID_SOCKET_HANDLE || ip_redirections.empty())
     return new QTableWidgetItem();
 
   sockaddr_in sock_addr;
@@ -309,7 +309,7 @@ void NetworkWidget::UpdateWiiSocketTable(Core::System& system)
   for (s32 wii_fd = 0; wii_fd < IOS::HLE::WII_SOCKET_FD_MAX; wii_fd++)
   {
     m_socket_table->insertRow(wii_fd);
-    const s32 host_fd = socket_manager->GetHostSocket(wii_fd);
+    const Common::SocketHandle host_fd = socket_manager->GetHostSocket(wii_fd);
     m_socket_table->setItem(wii_fd, 0, new QTableWidgetItem(QString::number(wii_fd)));
     m_socket_table->setItem(wii_fd, 1, GetSocketDomain(host_fd));
     m_socket_table->setItem(wii_fd, 2, GetSocketType(host_fd));
@@ -321,7 +321,7 @@ void NetworkWidget::UpdateWiiSocketTable(Core::System& system)
   for (s32 ssl_id = 0; ssl_id < IOS::HLE::NET_SSL_MAXINSTANCES; ssl_id++)
   {
     m_ssl_table->insertRow(ssl_id);
-    s32 host_fd = -1;
+    Common::SocketHandle host_fd = Common::INVALID_SOCKET_HANDLE;
     if (IOS::HLE::IsSSLIDValid(ssl_id))
     {
       const auto& ssl = IOS::HLE::NetSSLDevice::_SSL[ssl_id];
@@ -346,7 +346,7 @@ void NetworkWidget::UpdateTriforceSocketTable()
   for (s32 triforce_fd = 0; triforce_fd != AMMediaboard::SOCKET_FD_MAX; ++triforce_fd)
   {
     m_socket_table->insertRow(triforce_fd);
-    const s32 host_fd = AMMediaboard::DebuggerGetSocket(triforce_fd);
+    const Common::SocketHandle host_fd = AMMediaboard::DebuggerGetSocket(triforce_fd);
     m_socket_table->setItem(triforce_fd, 0, new QTableWidgetItem(QString::number(triforce_fd)));
     m_socket_table->setItem(triforce_fd, 1, GetSocketDomain(host_fd));
     m_socket_table->setItem(triforce_fd, 2, GetSocketType(host_fd));

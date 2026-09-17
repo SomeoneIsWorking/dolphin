@@ -161,7 +161,7 @@ void PostProcessingConfiguration::LoadOptions(const std::string& code)
         {
           // New section!
           std::string_view sub = line.substr(1, endpos - 1);
-          option_strings.push_back({std::string(sub)});
+          option_strings.push_back({std::string(sub), {}});
           current_strings = &option_strings.back();
         }
       }

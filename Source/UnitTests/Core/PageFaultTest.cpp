@@ -4,6 +4,7 @@
 #include <chrono>
 
 #include "Common/CommonTypes.h"
+#include "Common/Sanitizer.h"
 #include "Common/ScopeGuard.h"
 #include "Core/Core.h"
 #include "Core/MemTools.h"
@@ -42,13 +43,7 @@ public:
       m_post_unprotect_time;
 };
 
-#ifdef _MSC_VER
-#define ASAN_DISABLE __declspec(no_sanitize_address)
-#else
-#define ASAN_DISABLE
-#endif
-
-static void ASAN_DISABLE perform_invalid_access(void* data)
+static void DOLPHIN_NO_SANITIZE_ADDRESS perform_invalid_access(void* data)
 {
   *(volatile int*)data = 5;
 }

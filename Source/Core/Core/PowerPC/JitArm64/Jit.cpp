@@ -3,6 +3,8 @@
 
 #include "Core/PowerPC/JitArm64/Jit.h"
 
+#include <cstdlib>
+
 #include <cstdio>
 #include <optional>
 #include <span>
@@ -59,6 +61,16 @@ JitArm64::~JitArm64() = default;
 
 void JitArm64::Init()
 {
+  if (PPCSTATE_OFF_SPR(1023) > 16380 || PPCSTATE_OFF_PS0(0) % 8 != 0 ||
+      PPCSTATE_OFF(xer_ca) >= 4096 || PPCSTATE_OFF(xer_so_ov) >= 4096 ||
+      PPCSTATE_OFF(gather_pipe_ptr) > 504 ||
+      PPCSTATE_OFF(gather_pipe_ptr) + 8 != PPCSTATE_OFF(gather_pipe_base_ptr) ||
+      PPCSTATE_OFF(pagetable_update_pending) >= 0x1000 || PPCSTATE_OFF(pc) > 252 ||
+      PPCSTATE_OFF(pc) + 4 != PPCSTATE_OFF(npc))
+  {
+    PanicAlertFmt("PowerPC state violates ARM64 JIT addressing requirements");
+    std::abort();
+  }
   InitFastmemArena();
 
   RefreshConfig();
@@ -257,6 +269,8 @@ void JitArm64::Shutdown()
 
 void JitArm64::FallBackToInterpreter(UGeckoInstruction inst)
 {
+  EmitGcnPortFallback(js.compilerPC, inst.hex);
+
   FlushCarry();
   gpr.Flush(FlushMode::All, ARM64Reg::INVALID_REG, IgnoreDiscardedRegisters::Yes);
   fpr.Flush(FlushMode::All, ARM64Reg::INVALID_REG, IgnoreDiscardedRegisters::Yes);
@@ -358,6 +372,16 @@ void JitArm64::EmitGcnPortHook(u32 address)
   SetJumpTarget(run_original);
 }
 
+void JitArm64::EmitGcnPortFallback(u32 address, u32 instruction_hex)
+{
+  PowerPC::GcnPort::RuntimeSession* const runtime = GetGcnPortRuntime();
+  if (!runtime)
+    return;
+
+  ABI_CallFunction(&PowerPC::GcnPort::RuntimeSession::RecordFallbackFromJit, runtime, address,
+                   static_cast<u32>(PowerPC::GcnPort::ClassifyFallbackReason(instruction_hex)));
+}
+
 void JitArm64::DoNothing(UGeckoInstruction inst)
 {
   // Yup, just don't do anything.
@@ -373,8 +397,6 @@ void JitArm64::Cleanup()
 {
   if (jo.optimizeGatherPipe && js.fifoBytesSinceCheck > 0)
   {
-    static_assert(PPCSTATE_OFF(gather_pipe_ptr) <= 504);
-    static_assert(PPCSTATE_OFF(gather_pipe_ptr) + 8 == PPCSTATE_OFF(gather_pipe_base_ptr));
     LDP(IndexType::Signed, ARM64Reg::X0, ARM64Reg::X1, PPC_REG, PPCSTATE_OFF(gather_pipe_ptr));
     SUB(ARM64Reg::X0, ARM64Reg::X0, ARM64Reg::X1);
     CMP(ARM64Reg::X0, GPFifo::GATHER_PIPE_SIZE);
@@ -491,7 +513,6 @@ void JitArm64::MSRUpdated(u32 msr)
 
     auto WA = gpr.GetScopedReg();
 
-    static_assert(PPCSTATE_OFF(pagetable_update_pending) < 0x1000);
     LDRB(IndexType::Unsigned, WA, PPC_REG, PPCSTATE_OFF(pagetable_update_pending));
     FixupBranch update_not_pending = CBZ(WA);
     ABI_CallFunction(&PowerPC::MMU::PageTableUpdatedFromJit, &m_system.GetMMU());
@@ -528,7 +549,6 @@ void JitArm64::MSRUpdated(ARM64Reg msr)
   gpr.Flush(FlushMode::All, ARM64Reg::INVALID_REG);
   fpr.Flush(FlushMode::All, ARM64Reg::INVALID_REG);
   FixupBranch dr_unset = TBZ(WA, u8(UReg_MSR{}.DR.StartBit()));
-  static_assert(PPCSTATE_OFF(pagetable_update_pending) < 0x1000);
   LDRB(IndexType::Unsigned, WA, PPC_REG, PPCSTATE_OFF(pagetable_update_pending));
   FixupBranch update_not_pending = CBZ(WA);
   ABI_CallFunction(&PowerPC::MMU::PageTableUpdatedFromJit, &m_system.GetMMU());
@@ -867,8 +887,6 @@ void JitArm64::WriteExceptionExit(ARM64Reg dest, bool only_external, bool always
     no_exceptions = CBZ(ARM64Reg::W30);
   }
 
-  static_assert(PPCSTATE_OFF(pc) <= 252);
-  static_assert(PPCSTATE_OFF(pc) + 4 == PPCSTATE_OFF(npc));
   STP(IndexType::Signed, DISPATCHER_PC, DISPATCHER_PC, PPC_REG, PPCSTATE_OFF(pc));
 
   const auto f =
@@ -1350,9 +1368,6 @@ bool JitArm64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
         FlushCarry();
         gpr.Flush(FlushMode::All, ARM64Reg::INVALID_REG);
         fpr.Flush(FlushMode::All, ARM64Reg::INVALID_REG);
-
-        static_assert(PPCSTATE_OFF(pc) <= 252);
-        static_assert(PPCSTATE_OFF(pc) + 4 == PPCSTATE_OFF(npc));
 
         MOVI2R(DISPATCHER_PC, op.address);
         STP(IndexType::Signed, DISPATCHER_PC, DISPATCHER_PC, PPC_REG, PPCSTATE_OFF(pc));

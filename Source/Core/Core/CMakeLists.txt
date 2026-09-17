@@ -184,6 +184,7 @@ add_library(core
   HW/DVD/DVDInterface.h
   HW/DVD/AMMediaboard.cpp
   HW/DVD/AMMediaboard.h
+  HW/DVD/AMMediaboardSocket.h
   HW/DVD/DVDMath.cpp
   HW/DVD/DVDMath.h
   HW/DVD/DVDThread.cpp
@@ -434,6 +435,8 @@ add_library(core
   IOS/Network/Socket.h
   IOS/Network/SSL.cpp
   IOS/Network/SSL.h
+  IOS/Network/SSLTransport.cpp
+  IOS/Network/SSLTransport.h
   IOS/Network/WD/Command.cpp
   IOS/Network/WD/Command.h
   IOS/SDIO/SDIOSlot0.cpp

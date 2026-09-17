@@ -9,6 +9,7 @@
 
 #include "Common/Align.h"
 #include "Common/CommonTypes.h"
+#include "Common/Sanitizer.h"
 #include "Common/Swap.h"
 #include "Core/Core.h"
 #include "Core/MemTools.h"
@@ -256,13 +257,8 @@ public:
         << "Page was mapped to a different physical page than expected";
   }
 
-#ifdef _MSC_VER
-#define ASAN_DISABLE __declspec(no_sanitize_address)
-#else
-#define ASAN_DISABLE
-#endif
-
-  static void ASAN_DISABLE ExpectReadOnlyMapped(u32 logical_address, u32 physical_address)
+  static void DOLPHIN_NO_SANITIZE_ADDRESS ExpectReadOnlyMapped(u32 logical_address,
+                                                               u32 physical_address)
   {
     SCOPED_TRACE(
         fmt::format("ExpectReadOnlyMapped({:#010x}, {:#010x})", logical_address, physical_address));
@@ -289,7 +285,7 @@ public:
     EXPECT_EQ(s_detection_count, u32(1)) << "Page was mapped as writeable, against expectations";
   }
 
-  static void ASAN_DISABLE ExpectNotMapped(u32 logical_address)
+  static void DOLPHIN_NO_SANITIZE_ADDRESS ExpectNotMapped(u32 logical_address)
   {
     SCOPED_TRACE(fmt::format("ExpectNotMapped({:#010x})", logical_address));
 

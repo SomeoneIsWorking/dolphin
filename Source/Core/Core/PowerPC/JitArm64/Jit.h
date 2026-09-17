@@ -31,6 +31,7 @@ public:
   ~JitArm64() override;
 
   void Init() override;
+  const PowerPC::PowerPCState& GetPPCState() const { return m_ppc_state; }
   void Shutdown() override;
 
   JitCommon::ConstantPropagation& GetConstantPropagation() { return m_constant_propagation; }
@@ -65,6 +66,7 @@ public:
   void HLEFunction(u32 hook_index);
   void EmitGcnPortBlockEntry(u32 address);
   void EmitGcnPortHook(u32 address);
+  void EmitGcnPortFallback(u32 address, u32 instruction_hex);
 
   void DynaRunTable4(UGeckoInstruction inst);
   void DynaRunTable19(UGeckoInstruction inst);

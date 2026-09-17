@@ -23,13 +23,15 @@ PerfQuery::~PerfQuery() = default;
 
 bool PerfQuery::Initialize()
 {
-  constexpr D3D12_QUERY_HEAP_DESC desc = {D3D12_QUERY_HEAP_TYPE_OCCLUSION, PERF_QUERY_BUFFER_SIZE};
+  constexpr D3D12_QUERY_HEAP_DESC desc = {D3D12_QUERY_HEAP_TYPE_OCCLUSION, PERF_QUERY_BUFFER_SIZE,
+                                          0};
   HRESULT hr = g_dx_context->GetDevice()->CreateQueryHeap(&desc, IID_PPV_ARGS(&m_query_heap));
   ASSERT_MSG(VIDEO, SUCCEEDED(hr), "Failed to create query heap: {}", DX12HRWrap(hr));
   if (FAILED(hr))
     return false;
 
-  constexpr D3D12_HEAP_PROPERTIES heap_properties = {D3D12_HEAP_TYPE_READBACK};
+  constexpr D3D12_HEAP_PROPERTIES heap_properties = {
+      D3D12_HEAP_TYPE_READBACK, D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_MEMORY_POOL_UNKNOWN, 0, 0};
   constexpr D3D12_RESOURCE_DESC resource_desc = {D3D12_RESOURCE_DIMENSION_BUFFER,
                                                  0,
                                                  PERF_QUERY_BUFFER_SIZE * sizeof(PerfQueryDataType),

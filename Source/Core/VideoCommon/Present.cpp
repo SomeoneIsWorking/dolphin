@@ -281,6 +281,8 @@ extern "C" {
 volatile int g_sb_own_present = 0;
 volatile unsigned g_sb_owned_width = 0, g_sb_owned_stride = 0, g_sb_owned_height = 0;
 // Diagnostics: manual presents driven by the runtime, plus OutputField gated/auto counts.
+// These C ABI diagnostics retain volatile reads/writes, not atomic synchronization. Callers must
+// serialize access with the owning emulation thread, as for the adjacent owned-present state.
 volatile unsigned long g_sb_ownpres_manual = 0, g_sb_ownpres_gated = 0, g_sb_ownpres_auto = 0;
 volatile unsigned g_sb_ownpres_last = 0;
 }
@@ -293,7 +295,7 @@ extern "C" void sb_present_xfb(unsigned xfb_addr)
 {
   if (!g_presenter || g_sb_owned_width == 0 || g_sb_owned_height == 0)
     return;
-  g_sb_ownpres_manual++;
+  g_sb_ownpres_manual = g_sb_ownpres_manual + 1;
   g_sb_ownpres_last = xfb_addr;
   auto& core_timing = Core::System::GetInstance().GetCoreTiming();
   const u64 ticks = core_timing.GetTicks();
@@ -365,8 +367,10 @@ void Presenter::ViSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_height,
       uniq++;
       if (last_uniq_base != 0xffffffff)
       {
-        if ((xfb_addr & 0x400000u) == (last_uniq_base & 0x400000u)) g_sb_cadence_dbl++;
-        else g_sb_cadence_alt++;
+        if ((xfb_addr & 0x400000u) == (last_uniq_base & 0x400000u))
+          g_sb_cadence_dbl = g_sb_cadence_dbl + 1;
+        else
+          g_sb_cadence_alt = g_sb_cadence_alt + 1;
       }
       last_uniq_base = xfb_addr;
     }
@@ -401,6 +405,7 @@ void Presenter::ViSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_height,
       .present_count = m_present_count++,
       .emulated_timestamp = ticks,
       .intended_present_time = presentation_time,
+      .xfb_copy_hashes = {},
   };
 
   if (is_duplicate)
@@ -464,6 +469,7 @@ void Presenter::ImmediateSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_
       .reason = PresentInfo::PresentReason::Immediate,
       .emulated_timestamp = ticks,
       .intended_present_time = m_next_swap_estimated_time,
+      .xfb_copy_hashes = {},
   };
 
   auto& video_events = GetVideoEvents();

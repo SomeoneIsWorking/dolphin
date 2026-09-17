@@ -135,7 +135,7 @@ struct expr {
 };
 
 #define expr_init()                                                            \
-  { (enum expr_type)0 }
+  { (enum expr_type)0, {{0}} }
 
 struct expr_string {
   const char *s;

@@ -7,9 +7,8 @@
 
 #include "Core/DSP/Jit/x64/DSPEmitter.h"
 
-#include <cstddef>
-
 #include "Common/CommonTypes.h"
+#include "Common/MemberOffset.h"
 
 #include "Core/DSP/DSPCore.h"
 
@@ -149,14 +148,8 @@ void DSPEmitter::multiply_mulx(u8 axh0, u8 axh1)
 // direct use of prod regs by AX/AXWII (look @that part of ucode).
 void DSPEmitter::clrp(const UDSPInstruction opc)
 {
-#ifdef __GNUC__
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Winvalid-offsetof"
-#endif
-  int offset = static_cast<int>(offsetof(SDSP, r.prod.val));
-#ifdef __GNUC__
-#pragma GCC diagnostic pop
-#endif
+  const int offset = static_cast<int>(
+      Common::MemberOffset(m_dsp_core.DSPState(), m_dsp_core.DSPState().r.prod.val));
   // 64bit move to memory does not work. use 2 32bits
   MOV(32, MDisp(R15, offset + 0 * sizeof(u32)), Imm32(0xfff00000U));
   MOV(32, MDisp(R15, offset + 1 * sizeof(u32)), Imm32(0x001000ffU));

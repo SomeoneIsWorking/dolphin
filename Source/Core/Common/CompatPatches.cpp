@@ -5,6 +5,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <vector>
 #include <winternl.h>
 
@@ -85,7 +86,9 @@ public:
   {
     return reinterpret_cast<T>(base + rva);
   }
-  bool PatchIAT(const char* module_name, const char* function_name, void* value)
+  template <typename Function>
+  requires std::is_function_v<Function>
+  bool PatchIAT(const char* module_name, const char* function_name, Function* value)
   {
     auto import_dir = &directories[IMAGE_DIRECTORY_ENTRY_IMPORT];
     for (auto import_desc = GetRva<PIMAGE_IMPORT_DESCRIPTOR>(import_dir->VirtualAddress);

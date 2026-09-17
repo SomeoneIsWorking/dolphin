@@ -10,6 +10,24 @@
 
 namespace Common
 {
+#ifdef _WIN32
+using SocketHandle = SOCKET;
+inline constexpr SocketHandle INVALID_SOCKET_HANDLE = INVALID_SOCKET;
+#else
+using SocketHandle = int;
+inline constexpr SocketHandle INVALID_SOCKET_HANDLE = -1;
+#endif
+
+// Winsock ignores select's first argument; POSIX uses the highest descriptor plus one.
+constexpr int SelectNfds(SocketHandle socket [[maybe_unused]])
+{
+#ifdef _WIN32
+  return 0;
+#else
+  return socket + 1;
+#endif
+}
+
 class SocketContext
 {
 public:

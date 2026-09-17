@@ -800,7 +800,7 @@ const char* StrNetworkError()
   return DecodeNetworkError(error_code);
 }
 
-bool SetPlatformSocketOptions(int fd [[maybe_unused]])
+bool SetPlatformSocketOptions(SocketHandle fd [[maybe_unused]])
 {
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
   int opt_no_sigpipe = 1;

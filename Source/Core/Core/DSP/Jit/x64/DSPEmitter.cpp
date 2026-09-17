@@ -12,6 +12,7 @@
 #include "Common/ChunkFile.h"
 #include "Common/CommonTypes.h"
 #include "Common/Logging/Log.h"
+#include "Common/MemberOffset.h"
 
 #include "Core/DSP/DSPAnalyzer.h"
 #include "Core/DSP/DSPCore.h"
@@ -30,8 +31,8 @@ constexpr size_t MAX_BLOCK_SIZE = 250;
 constexpr u16 DSP_IDLE_SKIP_CYCLES = 0x1000;
 
 DSPEmitter::DSPEmitter(DSPCore& dsp)
-    : m_compile_status_register{SR_INT_ENABLE | SR_EXT_INT_ENABLE}, m_blocks(MAX_BLOCKS),
-      m_block_size(MAX_BLOCKS), m_block_links(MAX_BLOCKS), m_dsp_core{dsp}
+    : m_gpr(*this, dsp.DSPState()), m_compile_status_register{SR_INT_ENABLE | SR_EXT_INT_ENABLE},
+      m_blocks(MAX_BLOCKS), m_block_size(MAX_BLOCKS), m_block_links(MAX_BLOCKS), m_dsp_core{dsp}
 {
   x64::InitInstructionTables();
   AllocCodeSpace(COMPILED_CODE_SIZE);
@@ -473,23 +474,22 @@ void DSPEmitter::CompileDispatcher()
   RET();
 }
 
-#ifdef __GNUC__
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Winvalid-offsetof"
-#endif
 Gen::OpArg DSPEmitter::M_SDSP_pc()
 {
-  return MDisp(R15, static_cast<int>(offsetof(SDSP, pc)));
+  return MDisp(
+      R15, static_cast<int>(Common::MemberOffset(m_dsp_core.DSPState(), m_dsp_core.DSPState().pc)));
 }
 
 Gen::OpArg DSPEmitter::M_SDSP_exceptions()
 {
-  return MDisp(R15, static_cast<int>(offsetof(SDSP, exceptions)));
+  return MDisp(R15, static_cast<int>(Common::MemberOffset(m_dsp_core.DSPState(),
+                                                          m_dsp_core.DSPState().exceptions)));
 }
 
 Gen::OpArg DSPEmitter::M_SDSP_control_reg()
 {
-  return MDisp(R15, static_cast<int>(offsetof(SDSP, control_reg)));
+  return MDisp(R15, static_cast<int>(Common::MemberOffset(m_dsp_core.DSPState(),
+                                                          m_dsp_core.DSPState().control_reg)));
 }
 
 Gen::OpArg DSPEmitter::M_SDSP_external_interrupt_waiting()
@@ -497,21 +497,20 @@ Gen::OpArg DSPEmitter::M_SDSP_external_interrupt_waiting()
   static_assert(decltype(SDSP::external_interrupt_waiting)::is_always_lock_free &&
                 sizeof(SDSP::external_interrupt_waiting) == sizeof(u8));
 
-  return MDisp(R15, static_cast<int>(offsetof(SDSP, external_interrupt_waiting)));
+  return MDisp(R15, static_cast<int>(Common::MemberOffset(
+                        m_dsp_core.DSPState(), m_dsp_core.DSPState().external_interrupt_waiting)));
 }
 
 Gen::OpArg DSPEmitter::M_SDSP_r_st(size_t index)
 {
-  return MDisp(R15, static_cast<int>(offsetof(SDSP, r.st) + sizeof(SDSP::r.st[0]) * index));
+  return MDisp(R15, static_cast<int>(Common::MemberOffset(m_dsp_core.DSPState(),
+                                                          m_dsp_core.DSPState().r.st[index])));
 }
 
 Gen::OpArg DSPEmitter::M_SDSP_reg_stack_ptrs(size_t index)
 {
-  return MDisp(R15, static_cast<int>(offsetof(SDSP, reg_stack_ptrs) +
-                                     sizeof(SDSP::reg_stack_ptrs[0]) * index));
+  return MDisp(R15, static_cast<int>(Common::MemberOffset(
+                        m_dsp_core.DSPState(), m_dsp_core.DSPState().reg_stack_ptrs[index])));
 }
-#ifdef __GNUC__
-#pragma GCC diagnostic pop
-#endif
 
 }  // namespace DSP::JIT::x64

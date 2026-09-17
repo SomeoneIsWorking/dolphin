@@ -104,6 +104,7 @@ add_library(common
   Logging/LogManager.cpp
   Logging/LogManager.h
   MathUtil.h
+  MemberOffset.h
   Matrix.cpp
   Matrix.h
   MemArena.h
@@ -130,6 +131,7 @@ add_library(common
   RangeSet.h
   RangeSizeSet.h
   ScopeGuard.h
+  Sanitizer.h
   SDCardUtil.cpp
   SDCardUtil.h
   Semaphore.h

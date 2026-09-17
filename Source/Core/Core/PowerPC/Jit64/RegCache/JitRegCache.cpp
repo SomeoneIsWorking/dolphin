@@ -21,6 +21,11 @@
 using namespace Gen;
 using namespace PowerPC;
 
+const PowerPC::PowerPCState& RegCache::GetPPCState() const
+{
+  return m_jit.m_ppc_state;
+}
+
 RCOpArg RCOpArg::Imm32(u32 imm)
 {
   return RCOpArg{imm};
@@ -406,7 +411,7 @@ BitSet32 RegCache::RegistersInUse() const
 
 void RegCache::FlushX(X64Reg reg)
 {
-  ASSERT_MSG(DYNA_REC, reg < m_xregs.size(), "Flushing non-existent reg {}",
+  ASSERT_MSG(DYNA_REC, static_cast<size_t>(reg) < m_xregs.size(), "Flushing non-existent reg {}",
              std::to_underlying(reg));
   ASSERT(!m_xregs[reg].IsLocked());
   if (!m_xregs[reg].IsFree())

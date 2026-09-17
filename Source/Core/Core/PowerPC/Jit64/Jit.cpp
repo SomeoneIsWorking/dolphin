@@ -3,6 +3,8 @@
 
 #include "Core/PowerPC/Jit64/Jit.h"
 
+#include <cstdlib>
+
 #include <map>
 #include <span>
 #include <sstream>
@@ -256,6 +258,12 @@ bool Jit64::BackPatch(SContext* ctx)
 
 void Jit64::Init()
 {
+  if (PPCSTATE_OFF(above_fits_in_first_0x100) + 0x80 > 0x100 ||
+      PPCSTATE_OFF(xer_ca) + 1 != PPCSTATE_OFF(xer_so_ov))
+  {
+    PanicAlertFmt("PowerPC state violates x64 JIT addressing requirements");
+    std::abort();
+  }
   InitFastmemArena();
 
   RefreshConfig();
@@ -351,6 +359,8 @@ void Jit64::Shutdown()
 
 void Jit64::FallBackToInterpreter(UGeckoInstruction inst)
 {
+  EmitGcnPortFallback(js.compilerPC, inst.hex);
+
   FlushCarry();
   gpr.Flush(BitSet32(0xFFFFFFFF), RegCache::IgnoreDiscardedRegisters::Yes);
   fpr.Flush(BitSet32(0xFFFFFFFF), RegCache::IgnoreDiscardedRegisters::Yes);
@@ -456,6 +466,22 @@ void Jit64::EmitGcnPortHook(u32 address)
   MOV(32, R(RSCRATCH), PPCSTATE(pc));
   WriteExitDestInRSCRATCH();
   SetJumpTarget(run_original);
+}
+
+void Jit64::EmitGcnPortFallback(u32 address, u32 instruction_hex)
+{
+  PowerPC::GcnPort::RuntimeSession* const runtime = GetGcnPortRuntime();
+  if (!runtime)
+    return;
+
+  const u32 reason = static_cast<u32>(PowerPC::GcnPort::ClassifyFallbackReason(instruction_hex));
+  const BitSet32 registers_in_use = CallerSavedRegistersInUse();
+  ABI_PushRegistersAndAdjustStack(registers_in_use, 0);
+  MOV(64, R(ABI_PARAM1), Imm64(reinterpret_cast<u64>(runtime)));
+  MOV(32, R(ABI_PARAM2), Imm32(address));
+  MOV(32, R(ABI_PARAM3), Imm32(reason));
+  ABI_CallFunction(&PowerPC::GcnPort::RuntimeSession::RecordFallbackFromJit);
+  ABI_PopRegistersAndAdjustStack(registers_in_use, 0);
 }
 
 void Jit64::DoNothing(UGeckoInstruction _inst)

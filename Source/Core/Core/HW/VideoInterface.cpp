@@ -878,10 +878,10 @@ void VideoInterfaceManager::OutputField(FieldType field, u64 ticks)
   g_sb_owned_height = fbHeight;
   if (g_sb_own_present)
   {
-    g_sb_ownpres_gated++;
+    g_sb_ownpres_gated = g_sb_ownpres_gated + 1;
     return;
   }
-  g_sb_ownpres_auto++;
+  g_sb_ownpres_auto = g_sb_ownpres_auto + 1;
 
   // Outputting the entire frame using a single set of VI register values isn't accurate, as games
   // can change the register values during scanout. To correctly emulate the scanout process, we

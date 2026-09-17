@@ -310,7 +310,7 @@ private:
 
   static constexpr size_t MAX_BLOCKS = 0x10000;
 
-  DSPJitRegCache m_gpr{*this};
+  DSPJitRegCache m_gpr;
 
   u16 m_compile_pc;
   u16 m_compile_status_register;

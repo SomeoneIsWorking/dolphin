@@ -233,18 +233,6 @@ struct PowerPCState
   void UpdateFPRFSingle(float fvalue);
 };
 
-#ifdef _M_X86_64
-#ifdef __GNUC__
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Winvalid-offsetof"
-#endif
-static_assert(offsetof(PowerPC::PowerPCState, above_fits_in_first_0x100) <= 0x100,
-              "top of PowerPCState too big");
-#ifdef __GNUC__
-#pragma GCC diagnostic pop
-#endif
-#endif
-
 std::span<const CPUCore> AvailableCPUCores();
 CPUCore DefaultCPUCore();
 

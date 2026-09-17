@@ -596,7 +596,7 @@ void ICCardReader::SendReply(u8 command, u16 status_code, std::span<const u8> pa
     Common::BigEndianValue<u16> status;
   };
 
-  ICCardReplyHeader header{.command = command};
+  ICCardReplyHeader header{.command = command, .length = {}, .status = {}};
   header.length = u16(sizeof(header.status) + payload.size());
   header.status = status_code;
 

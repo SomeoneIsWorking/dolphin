@@ -160,7 +160,7 @@ void TextureCacheBase::Invalidate()
 // in-between's owned-EFB texture bind never leaks into the real frame.
 void TextureCacheBase::SbResetBinds()
 {
-  g_sb_efb_resets++;
+  g_sb_efb_resets = g_sb_efb_resets + 1;
   for (auto& bind : m_bound_textures)
     bind.reset();
   TMEM::InvalidateAll();
@@ -1291,7 +1291,8 @@ TCacheEntry* TextureCacheBase::LoadImpl(u32 stage, bool force_reload)
     // in it's bloom effect, which breaks without giving it the invalidated texture.
     if (TMEM::IsCached(stage))
     {
-      if (!g_sb_efb_redirect_inbetween && entry->sb_owned) g_sb_efb_real_reused_owned++;
+      if (!g_sb_efb_redirect_inbetween && entry->sb_owned)
+        g_sb_efb_real_reused_owned = g_sb_efb_real_reused_owned + 1;
       return entry;
     }
 
@@ -1299,7 +1300,8 @@ TCacheEntry* TextureCacheBase::LoadImpl(u32 stage, bool force_reload)
     // FIXME: this doesn't correctly handle textures from tmem.
     if (!entry->invalidated && entry->base_hash == entry->CalculateHash())
     {
-      if (!g_sb_efb_redirect_inbetween && entry->sb_owned) g_sb_efb_real_reused_owned++;
+      if (!g_sb_efb_redirect_inbetween && entry->sb_owned)
+        g_sb_efb_real_reused_owned = g_sb_efb_real_reused_owned + 1;
       return entry;
     }
   }
@@ -1347,10 +1349,10 @@ RcTcacheEntry TextureCacheBase::GetTexture(const int textureCacheSafetyColorSamp
     auto it = m_sb_efb_own.find(texture_info.GetRawAddress());
     if (it != m_sb_efb_own.end() && it->second)
     {
-      g_sb_efb_owned_hits++;
+      g_sb_efb_owned_hits = g_sb_efb_owned_hits + 1;
       return it->second;
     }
-    g_sb_efb_owned_miss++;
+    g_sb_efb_owned_miss = g_sb_efb_owned_miss + 1;
   }
 
   // Hash assigned to texcache entry (also used to generate filenames used for texture dumping and
@@ -2369,7 +2371,7 @@ void TextureCacheBase::CopyRenderTargetToTexture(
                           isIntensity, gamma, clamp_top, clamp_bottom,
                           GetVRAMCopyFilterCoefficients(filter_coefficients));
       m_sb_efb_own[dstAddr] = oe;
-      g_sb_efb_redirects++;
+      g_sb_efb_redirects = g_sb_efb_redirects + 1;
     }
     return;
   }
@@ -2463,7 +2465,7 @@ void TextureCacheBase::CopyRenderTargetToTexture(
   // (copy_to_vram false for this copy) — it falls through to the normal path and WRITES guest RAM
   // at the real screen-space address (the lag clobber). Count it.
   if (g_sb_efb_redirect_inbetween && !is_xfb_copy)
-    g_sb_efb_inbetween_ramwrite++;
+    g_sb_efb_inbetween_ramwrite = g_sb_efb_inbetween_ramwrite + 1;
 
   if (copy_to_ram)
   {
@@ -3117,7 +3119,7 @@ bool TextureCacheBase::DecodeTextureOnGPU(RcTcacheEntry& entry, u32 dst_level, c
     u32 palette_offset, unused;
   } uniforms = {width,          height,     aligned_width,
                 aligned_height, src_offset, row_stride / bytes_per_buffer_elem,
-                palette_offset};
+                palette_offset, 0};
   g_vertex_manager->UploadUtilityUniforms(&uniforms, sizeof(uniforms));
   g_gfx->SetComputeImageTexture(0, m_decoding_texture.get(), false, true);
 

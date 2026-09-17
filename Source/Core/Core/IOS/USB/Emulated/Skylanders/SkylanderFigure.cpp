@@ -180,8 +180,9 @@ void SkylanderFigure::GetBlock(u8 index, u8* dest) const
 
 FigureData SkylanderFigure::GetData() const
 {
-  FigureData figure_data = {.figure_id = Common::BitCastPtr<u16>(m_data.data() + 0x10),
-                            .variant_id = Common::BitCastPtr<u16>(m_data.data() + 0x1C)};
+  FigureData figure_data{};
+  figure_data.figure_id = Common::BitCastPtr<u16>(m_data.data() + 0x10);
+  figure_data.variant_id = Common::BitCastPtr<u16>(m_data.data() + 0x1C);
 
   auto filter = std::make_pair(figure_data.figure_id, figure_data.variant_id);
   Type type = Type::Item;
@@ -203,9 +204,11 @@ FigureData SkylanderFigure::GetData() const
     u16 area_offset = ((decrypted[0x89] + 1U) != decrypted[0x249]) ? 0x80 : 0x240;
 
     figure_data.skylander_data = {
+        .toy_code = {},
         .money = Common::BitCastPtr<u16>(decrypted.data() + area_offset + 0x3),
         .hero_level = Common::BitCastPtr<u16>(decrypted.data() + area_offset + 0x5A),
         .playtime = Common::BitCastPtr<u32>(decrypted.data() + area_offset + 0x5),
+        .nickname = {},
         .last_reset = {.minute = Common::BitCastPtr<u8>(decrypted.data() + area_offset + 0x60),
                        .hour = Common::BitCastPtr<u8>(decrypted.data() + area_offset + 0x61),
                        .day = Common::BitCastPtr<u8>(decrypted.data() + area_offset + 0x62),

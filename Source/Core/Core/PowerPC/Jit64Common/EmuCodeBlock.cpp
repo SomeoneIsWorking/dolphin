@@ -22,6 +22,11 @@
 
 using namespace Gen;
 
+const PowerPC::PowerPCState& EmuCodeBlock::GetPPCState() const
+{
+  return m_jit.m_ppc_state;
+}
+
 namespace
 {
 OpArg SwapImmediate(int access_size, const OpArg& reg_value)
