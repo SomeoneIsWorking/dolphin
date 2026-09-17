@@ -138,6 +138,14 @@ void CBoot::SetupBAT(Core::System& system, bool is_wii)
   mmu.IBATUpdated();
 }
 
+void CBoot::SetupGameCubeBS2Registers(Core::System& system)
+{
+  auto& ppc_state = system.GetPPCState();
+  SetupMSR(system);
+  SetupHID(ppc_state, /*is_wii*/ false);
+  SetupBAT(system, /*is_wii*/ false);
+}
+
 bool CBoot::RunApploader(Core::System& system, const Core::CPUThreadGuard& guard, bool is_wii,
                          const DiscIO::VolumeDisc& volume,
                          const std::vector<DiscIO::Riivolution::Patch>& riivolution_patches)

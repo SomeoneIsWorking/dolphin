@@ -159,6 +159,18 @@ public:
   static bool BootUp(Core::System& system, const Core::CPUThreadGuard& guard,
                      std::unique_ptr<BootParameters> boot);
 
+  // Exposes the exact GameCube MSR/HID/BAT register setup CBoot::EmulatedBS2_GC applies before
+  // jumping to a disc's DOL entry point (see SetupMSR/SetupHID/SetupBAT below), for a caller that
+  // boots a raw in-memory GameCube image without going through the disc/apploader pipeline (see
+  // PowerPC::GcnPort::BootAuthenticatedImage). Without this, a real DOL's own code executes with
+  // MSR.DR/IR left at their power-on-reset value of 0 (real mode): PowerPC real-mode addressing
+  // uses the raw address as a PHYSICAL address, so a normal effective address the game was linked
+  // for (e.g. 0x80xxxxxx) is treated as a physical address far outside the console's 24 MiB of GC
+  // RAM instead of being translated back down to it, faulting on the first such access. This is
+  // the same GameCube-standard MSR/BAT configuration every retail title's real BS2/IPL establishes
+  // before transferring control; it carries no per-title state.
+  static void SetupGameCubeBS2Registers(Core::System& system);
+
 private:
   static bool DVDRead(Core::System& system, const DiscIO::VolumeDisc& disc, u64 dvd_offset,
                       u32 output_address, u32 length, const DiscIO::Partition& partition);

@@ -297,6 +297,94 @@ void RunPublicAdapterScenario()
   File::DeleteDirRecursively(profile_path);
 }
 
+// Proves BootAuthenticatedImage's apply_gamecube_os_init flag actually installs the exact retail
+// GameCube MSR/BAT configuration CBoot::EmulatedBS2_GC applies before jumping to a disc's DOL entry
+// point (see CBoot::SetupGameCubeBS2Registers), rather than merely compiling. Asserting the raw SPR
+// contents matches this file's own convention of testing through the public one-block adapter
+// surface, not a synthetic guest program: MSR/BAT registers are host-visible state the adapter is
+// responsible for, independent of what guest code the caller boots.
+void RunGameCubeOsInitScenario()
+{
+  const std::string profile_path = File::CreateTempDir();
+  if (profile_path.empty())
+  {
+    ADD_FAILURE() << "failed to create an isolated Dolphin user directory";
+    return;
+  }
+
+  constexpr u32 PROGRAM_ADDRESS = 0x80007000;
+  const std::vector<u8> program = BigEndianImage({BRANCH_TO_SELF});
+  const auto identity = MakeIdentity(3);
+
+  Core::System& system = Core::System::GetInstance();
+  const auto booted = PowerPC::GcnPort::BootAuthenticatedImage(
+      system, identity, program, PROGRAM_ADDRESS, PROGRAM_ADDRESS,
+      /*apply_gamecube_os_init=*/true);
+  ASSERT_TRUE(booted.ok) << booted.detail;
+
+  const auto& ppc_state = system.GetPPCState();
+  EXPECT_EQ(ppc_state.msr.DR, 1u);
+  EXPECT_EQ(ppc_state.msr.IR, 1u);
+  EXPECT_EQ(ppc_state.msr.FP, 1u);
+  EXPECT_EQ(ppc_state.msr.RI, 1u);
+  // CBoot::SetupBAT's exact retail GameCube constants (Boot_BS2Emu.cpp): BAT0 maps the cached
+  // 0x80000000 effective mirror and BAT1 maps the 0xC0000000 uncached mirror, both onto physical
+  // RAM starting at 0. Without these (real mode, MSR.DR/IR == 0) an ordinary effective address like
+  // PROGRAM_ADDRESS above would be used as a physical address instead, far outside GC RAM.
+  EXPECT_EQ(ppc_state.spr[SPR_IBAT0U], 0x80001fffu);
+  EXPECT_EQ(ppc_state.spr[SPR_IBAT0L], 0x00000002u);
+  EXPECT_EQ(ppc_state.spr[SPR_DBAT0U], 0x80001fffu);
+  EXPECT_EQ(ppc_state.spr[SPR_DBAT0L], 0x00000002u);
+  EXPECT_EQ(ppc_state.spr[SPR_DBAT1U], 0xc0001fffu);
+  EXPECT_EQ(ppc_state.spr[SPR_DBAT1L], 0x0000002au);
+
+  PowerPC::GcnPort::ShutdownBootedImage(system);
+  File::DeleteDirRecursively(profile_path);
+}
+
+TEST(GcnPortRuntime, BootAuthenticatedImageAppliesGameCubeOsInitRegisters)
+{
+  std::thread cpu_thread(RunGameCubeOsInitScenario);
+  cpu_thread.join();
+}
+
+// The default (apply_gamecube_os_init=false, the parameter's default value) must be unchanged: a
+// caller booting a small synthetic PPC test program that never relies on effective-address
+// translation keeps real-mode MSR/BAT state exactly as before this flag existed.
+void RunGameCubeOsInitDefaultOffScenario()
+{
+  const std::string profile_path = File::CreateTempDir();
+  if (profile_path.empty())
+  {
+    ADD_FAILURE() << "failed to create an isolated Dolphin user directory";
+    return;
+  }
+
+  constexpr u32 PROGRAM_ADDRESS = 0x80008000;
+  const std::vector<u8> program = BigEndianImage({BRANCH_TO_SELF});
+  const auto identity = MakeIdentity(4);
+
+  Core::System& system = Core::System::GetInstance();
+  const auto booted = PowerPC::GcnPort::BootAuthenticatedImage(system, identity, program,
+                                                                 PROGRAM_ADDRESS, PROGRAM_ADDRESS);
+  ASSERT_TRUE(booted.ok) << booted.detail;
+
+  const auto& ppc_state = system.GetPPCState();
+  EXPECT_EQ(ppc_state.msr.DR, 0u);
+  EXPECT_EQ(ppc_state.msr.IR, 0u);
+  EXPECT_EQ(ppc_state.spr[SPR_IBAT0U], 0u);
+  EXPECT_EQ(ppc_state.spr[SPR_DBAT0U], 0u);
+
+  PowerPC::GcnPort::ShutdownBootedImage(system);
+  File::DeleteDirRecursively(profile_path);
+}
+
+TEST(GcnPortRuntime, BootAuthenticatedImageDefaultsToNoGameCubeOsInit)
+{
+  std::thread cpu_thread(RunGameCubeOsInitDefaultOffScenario);
+  cpu_thread.join();
+}
+
 TEST(GcnPortRuntime, PublicAdapterBootExecuteOriginalAndTypedFallback)
 {
   std::thread cpu_thread(RunPublicAdapterScenario);
