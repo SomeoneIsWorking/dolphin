@@ -15,6 +15,11 @@
 
 using namespace Arm64Gen;
 
+const PowerPC::PowerPCState& Arm64RegCache::GetPPCState() const
+{
+  return m_jit->m_ppc_state;
+}
+
 void Arm64RegCache::Init(JitArm64* jit)
 {
   m_jit = jit;

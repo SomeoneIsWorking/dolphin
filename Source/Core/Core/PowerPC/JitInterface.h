@@ -43,7 +43,7 @@ public:
   void DoState(PointerWrap& p);
 
   CPUCoreBase* InitJitCore(PowerPC::CPUCore core);
-  CPUCoreBase* GetCore() const;
+  JitBase* GetCore() const;
 
 #ifdef _ARCH_32
   constexpr bool WantsPageTableMappings() const { return false; }

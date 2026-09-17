@@ -24,7 +24,8 @@ enum class MsgType
 using MsgAlertHandler = bool (*)(const char* caption, const char* text, bool yes_no, MsgType style);
 using StringTranslator = std::string (*)(const char* text);
 
-void RegisterMsgAlertHandler(MsgAlertHandler handler);
+// Returns the previous handler so temporary overrides can restore their owner.
+MsgAlertHandler RegisterMsgAlertHandler(MsgAlertHandler handler);
 void RegisterStringTranslator(StringTranslator translator);
 
 [[nodiscard]] std::string GetStringT(const char* string);

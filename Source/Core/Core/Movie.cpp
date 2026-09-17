@@ -558,7 +558,11 @@ bool MovieManager::BeginRecordingInput(const ControllerTypeArray& controllers,
   // know if we're using a Wii at this point. So, we'll assume a Wii is used here. In practice,
   // this shouldn't affect anything for GC (as its only unique setting is language, which will be
   // taken from base settings as expected)
-  static DTMHeader header = {.bWii = true};
+  static DTMHeader header = [] {
+    DTMHeader initial_header{};
+    initial_header.bWii = true;
+    return initial_header;
+  }();
   ConfigLoaders::SaveToDTM(&header);
   Config::AddLayer(ConfigLoaders::GenerateMovieConfigLoader(&header));
 

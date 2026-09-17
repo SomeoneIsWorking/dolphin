@@ -17,6 +17,7 @@
 #endif
 
 #include "Common/CommonTypes.h"
+#include "Common/SocketContext.h"
 
 struct sockaddr_in;
 
@@ -315,7 +316,7 @@ const char* DecodeNetworkError(s32 error_code);
 const char* StrNetworkError();
 
 // Sets SO_NOSIGPIPE when available.
-bool SetPlatformSocketOptions(int fd);
+bool SetPlatformSocketOptions(SocketHandle fd);
 
 // Pass this to all `send` calls to avoid SIGPIPE.
 #if defined(__linux__) || defined(__HAIKU__)

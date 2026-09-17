@@ -7,9 +7,17 @@
 
 #include "Common/x64Emitter.h"
 
+namespace DSP
+{
+struct SDSP;
+}
+
 namespace DSP::JIT::x64
 {
 class DSPEmitter;
+
+// Memory operand relative to the live SDSP base held in R15 by the dispatcher.
+Gen::OpArg GetRegisterMemory(const SDSP& state, size_t reg);
 
 enum DSPJitRegSpecial
 {
@@ -35,7 +43,7 @@ enum class RegisterExtension
 class DSPJitRegCache
 {
 public:
-  explicit DSPJitRegCache(DSPEmitter& emitter);
+  DSPJitRegCache(DSPEmitter& emitter, const SDSP& state);
 
   // For branching into multiple control flows
   DSPJitRegCache(const DSPJitRegCache& cache);

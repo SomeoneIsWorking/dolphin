@@ -5,8 +5,7 @@
 
 // Sunbright: enable per-frame draw/primitive statistics so we can enumerate the GX
 // render passes Dolphin makes and compare against the native (ngx) capture to find
-// missing/extra geometry. INCSTAT is otherwise a no-op in release.
-#define STATISTICS 1
+// missing/extra geometry. Statistics remain enabled in every build configuration.
 
 #include <array>
 #include <vector>
@@ -99,9 +98,6 @@ struct Statistics
 
 extern Statistics g_stats;
 
-#define STATISTICS
-
-#ifdef STATISTICS
 #define INCSTAT(a)                                                                                 \
   do                                                                                               \
   {                                                                                                \
@@ -117,17 +113,3 @@ extern Statistics g_stats;
   {                                                                                                \
     (a) = static_cast<int>(x);                                                                     \
   } while (false)
-#else
-#define INCSTAT(a)                                                                                 \
-  do                                                                                               \
-  {                                                                                                \
-  } while (false)
-#define ADDSTAT(a, b)                                                                              \
-  do                                                                                               \
-  {                                                                                                \
-  } while (false)
-#define SETSTAT(a, x)                                                                              \
-  do                                                                                               \
-  {                                                                                                \
-  } while (false)
-#endif

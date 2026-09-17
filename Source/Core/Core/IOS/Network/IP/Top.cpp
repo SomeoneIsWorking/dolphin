@@ -448,7 +448,8 @@ static DefaultInterface GetSystemDefaultInterfaceOrFallback()
   static const in_addr FALLBACK_NETMASK = std::bit_cast<in_addr>(inet_addr("255.255.255.0"));
   static const in_addr FALLBACK_BROADCAST = std::bit_cast<in_addr>(inet_addr("10.0.1.255"));
   static const in_addr FALLBACK_GATEWAY = std::bit_cast<in_addr>(inet_addr("10.0.1.1"));
-  static const InterfaceRouting FALLBACK_ROUTING = {.gateway = FALLBACK_GATEWAY};
+  static const InterfaceRouting FALLBACK_ROUTING = {
+      .index = 0, .destination = {}, .netmask = {}, .gateway = FALLBACK_GATEWAY};
   static const DefaultInterface FALLBACK_VALUES = {
       FALLBACK_IP, FALLBACK_NETMASK, FALLBACK_BROADCAST, {FALLBACK_ROUTING}};
   return GetSystemDefaultInterface().value_or(FALLBACK_VALUES);

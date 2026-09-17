@@ -269,6 +269,6 @@ using IPRedirections = std::vector<IPRedirection>;
 
 IPRedirections GetIPRedirections();
 
-s32 DebuggerGetSocket(u32 triforce_fd);
+Common::SocketHandle DebuggerGetSocket(u32 triforce_fd);
 
 };  // namespace AMMediaboard

@@ -8,6 +8,8 @@
 #include "Common/Logging/Log.h"
 #include "Common/MsgHandler.h"
 
+// Keep the optional arguments inside __VA_OPT__: clang-cl's Microsoft comma elision
+// otherwise removes the required separator before the condition when they are empty.
 #define ASSERT_MSG(_t_, _a_, _fmt_, ...)                                                           \
   do                                                                                               \
   {                                                                                                \
@@ -17,7 +19,7 @@
                                "An error occurred.\n\n" _fmt_ "\n\n"                               \
                                "  Condition: {}\n  File: {}\n  Line: {}\n  Function: {}\n\n"       \
                                "Ignore and continue?",                                             \
-                               __VA_ARGS__ __VA_OPT__(, ) #_a_, __FILE__, __LINE__, __func__))     \
+                               __VA_OPT__(__VA_ARGS__, ) #_a_, __FILE__, __LINE__, __func__))      \
         Crash();                                                                                   \
     }                                                                                              \
   } while (0)

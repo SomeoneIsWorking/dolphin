@@ -36,7 +36,7 @@ private:
   const std::size_t m_max_frame_size;
   Common::SocketContext m_socket_context;
 
-  int m_fd = -1;
+  Common::SocketHandle m_fd = Common::INVALID_SOCKET_HANDLE;
   std::thread m_read_thread;
   Common::Flag m_read_enabled;
   Common::Flag m_read_shutdown;

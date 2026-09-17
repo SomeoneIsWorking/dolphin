@@ -13,6 +13,10 @@
 #include "Core/PowerPC/Jit64/RegCache/CachedReg.h"
 
 class Jit64;
+namespace PowerPC
+{
+struct PowerPCState;
+}
 enum class RCMode;
 
 class RCOpArg;
@@ -226,6 +230,7 @@ protected:
 
   bool IsAnyConstraintActive() const;
 
+  const PowerPC::PowerPCState& GetPPCState() const;
   Jit64& m_jit;
   std::array<PPCCachedReg, 32> m_regs;
   std::array<X64CachedReg, NUM_XREGS> m_xregs;

@@ -23,25 +23,27 @@ namespace Core
 NetworkCaptureLogger::NetworkCaptureLogger() = default;
 NetworkCaptureLogger::~NetworkCaptureLogger() = default;
 
-void DummyNetworkCaptureLogger::OnNewSocket(s32 socket)
+void DummyNetworkCaptureLogger::OnNewSocket(Common::SocketHandle socket)
 {
 }
 
-void DummyNetworkCaptureLogger::LogSSLRead(const void* data, std::size_t length, s32 socket)
+void DummyNetworkCaptureLogger::LogSSLRead(const void* data, std::size_t length,
+                                           Common::SocketHandle socket)
 {
 }
 
-void DummyNetworkCaptureLogger::LogSSLWrite(const void* data, std::size_t length, s32 socket)
+void DummyNetworkCaptureLogger::LogSSLWrite(const void* data, std::size_t length,
+                                            Common::SocketHandle socket)
 {
 }
 
-void DummyNetworkCaptureLogger::LogRead(const void* data, std::size_t length, s32 socket,
-                                        sockaddr* from)
+void DummyNetworkCaptureLogger::LogRead(const void* data, std::size_t length,
+                                        Common::SocketHandle socket, sockaddr* from)
 {
 }
 
-void DummyNetworkCaptureLogger::LogWrite(const void* data, std::size_t length, s32 socket,
-                                         sockaddr* to)
+void DummyNetworkCaptureLogger::LogWrite(const void* data, std::size_t length,
+                                         Common::SocketHandle socket, sockaddr* to)
 {
 }
 
@@ -54,7 +56,8 @@ NetworkCaptureType DummyNetworkCaptureLogger::GetCaptureType() const
   return NetworkCaptureType::None;
 }
 
-void BinarySSLCaptureLogger::LogSSLRead(const void* data, std::size_t length, s32 socket)
+void BinarySSLCaptureLogger::LogSSLRead(const void* data, std::size_t length,
+                                        Common::SocketHandle socket)
 {
   if (!Config::Get(Config::MAIN_NETWORK_SSL_DUMP_READ))
     return;
@@ -63,7 +66,8 @@ void BinarySSLCaptureLogger::LogSSLRead(const void* data, std::size_t length, s3
   File::IOFile(filename, "ab").WriteBytes(data, length);
 }
 
-void BinarySSLCaptureLogger::LogSSLWrite(const void* data, std::size_t length, s32 socket)
+void BinarySSLCaptureLogger::LogSSLWrite(const void* data, std::size_t length,
+                                         Common::SocketHandle socket)
 {
   if (!Config::Get(Config::MAIN_NETWORK_SSL_DUMP_WRITE))
     return;
@@ -88,32 +92,36 @@ PCAPSSLCaptureLogger::PCAPSSLCaptureLogger()
 
 PCAPSSLCaptureLogger::~PCAPSSLCaptureLogger() = default;
 
-void PCAPSSLCaptureLogger::OnNewSocket(s32 socket)
+void PCAPSSLCaptureLogger::OnNewSocket(Common::SocketHandle socket)
 {
   m_read_sequence_number[socket] = 0;
   m_write_sequence_number[socket] = 0;
 }
 
-void PCAPSSLCaptureLogger::LogSSLRead(const void* data, std::size_t length, s32 socket)
+void PCAPSSLCaptureLogger::LogSSLRead(const void* data, std::size_t length,
+                                      Common::SocketHandle socket)
 {
   if (!Config::Get(Config::MAIN_NETWORK_SSL_DUMP_READ))
     return;
   Log(LogType::Read, data, length, socket, nullptr);
 }
 
-void PCAPSSLCaptureLogger::LogSSLWrite(const void* data, std::size_t length, s32 socket)
+void PCAPSSLCaptureLogger::LogSSLWrite(const void* data, std::size_t length,
+                                       Common::SocketHandle socket)
 {
   if (!Config::Get(Config::MAIN_NETWORK_SSL_DUMP_WRITE))
     return;
   Log(LogType::Write, data, length, socket, nullptr);
 }
 
-void PCAPSSLCaptureLogger::LogRead(const void* data, std::size_t length, s32 socket, sockaddr* from)
+void PCAPSSLCaptureLogger::LogRead(const void* data, std::size_t length,
+                                   Common::SocketHandle socket, sockaddr* from)
 {
   Log(LogType::Read, data, length, socket, from);
 }
 
-void PCAPSSLCaptureLogger::LogWrite(const void* data, std::size_t length, s32 socket, sockaddr* to)
+void PCAPSSLCaptureLogger::LogWrite(const void* data, std::size_t length,
+                                    Common::SocketHandle socket, sockaddr* to)
 {
   Log(LogType::Write, data, length, socket, to);
 }
@@ -128,8 +136,8 @@ void PCAPSSLCaptureLogger::LogBBA(const void* data, std::size_t length)
   m_file->AddPacket(static_cast<const u8*>(data), length);
 }
 
-void PCAPSSLCaptureLogger::Log(LogType log_type, const void* data, std::size_t length, s32 socket,
-                               sockaddr* other)
+void PCAPSSLCaptureLogger::Log(LogType log_type, const void* data, std::size_t length,
+                               Common::SocketHandle socket, sockaddr* other)
 {
   const auto state = Common::SaveNetworkErrorState();
   Common::ScopeGuard guard([&state] { Common::RestoreNetworkErrorState(state); });
@@ -160,8 +168,9 @@ void PCAPSSLCaptureLogger::Log(LogType log_type, const void* data, std::size_t l
   LogIPv4(log_type, static_cast<const u8*>(data), static_cast<u16>(length), socket, *from, *to);
 }
 
-void PCAPSSLCaptureLogger::LogIPv4(LogType log_type, const u8* data, u16 length, s32 socket,
-                                   const sockaddr_in& from, const sockaddr_in& to)
+void PCAPSSLCaptureLogger::LogIPv4(LogType log_type, const u8* data, u16 length,
+                                   Common::SocketHandle socket, const sockaddr_in& from,
+                                   const sockaddr_in& to)
 {
   int socket_type;
   socklen_t option_length = sizeof(int);

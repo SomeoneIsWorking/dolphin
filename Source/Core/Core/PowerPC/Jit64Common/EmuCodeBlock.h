@@ -19,6 +19,10 @@ class Mapping;
 }
 
 class Jit64;
+namespace PowerPC
+{
+struct PowerPCState;
+}
 
 // Like XCodeBlock but has some utilities for memory access.
 class EmuCodeBlock : public Gen::X64CodeBlock
@@ -131,6 +135,7 @@ public:
   void Clear();
 
 protected:
+  const PowerPC::PowerPCState& GetPPCState() const;
   Jit64& m_jit;
   ConstantPool m_const_pool;
   FarCodeCache m_far_code;

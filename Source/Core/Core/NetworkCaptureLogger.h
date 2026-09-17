@@ -18,6 +18,7 @@ using socklen_t = int;
 #endif
 
 #include "Common/CommonTypes.h"
+#include "Common/SocketContext.h"
 
 namespace Common
 {
@@ -43,13 +44,15 @@ public:
   NetworkCaptureLogger& operator=(NetworkCaptureLogger&&) = delete;
   virtual ~NetworkCaptureLogger();
 
-  virtual void OnNewSocket(s32 socket) = 0;
+  virtual void OnNewSocket(Common::SocketHandle socket) = 0;
 
-  virtual void LogSSLRead(const void* data, std::size_t length, s32 socket) = 0;
-  virtual void LogSSLWrite(const void* data, std::size_t length, s32 socket) = 0;
+  virtual void LogSSLRead(const void* data, std::size_t length, Common::SocketHandle socket) = 0;
+  virtual void LogSSLWrite(const void* data, std::size_t length, Common::SocketHandle socket) = 0;
 
-  virtual void LogRead(const void* data, std::size_t length, s32 socket, sockaddr* from) = 0;
-  virtual void LogWrite(const void* data, std::size_t length, s32 socket, sockaddr* to) = 0;
+  virtual void LogRead(const void* data, std::size_t length, Common::SocketHandle socket,
+                       sockaddr* from) = 0;
+  virtual void LogWrite(const void* data, std::size_t length, Common::SocketHandle socket,
+                        sockaddr* to) = 0;
 
   virtual void LogBBA(const void* data, std::size_t length) = 0;
 
@@ -59,13 +62,15 @@ public:
 class DummyNetworkCaptureLogger : public NetworkCaptureLogger
 {
 public:
-  void OnNewSocket(s32 socket) override;
+  void OnNewSocket(Common::SocketHandle socket) override;
 
-  void LogSSLRead(const void* data, std::size_t length, s32 socket) override;
-  void LogSSLWrite(const void* data, std::size_t length, s32 socket) override;
+  void LogSSLRead(const void* data, std::size_t length, Common::SocketHandle socket) override;
+  void LogSSLWrite(const void* data, std::size_t length, Common::SocketHandle socket) override;
 
-  void LogRead(const void* data, std::size_t length, s32 socket, sockaddr* from) override;
-  void LogWrite(const void* data, std::size_t length, s32 socket, sockaddr* to) override;
+  void LogRead(const void* data, std::size_t length, Common::SocketHandle socket,
+               sockaddr* from) override;
+  void LogWrite(const void* data, std::size_t length, Common::SocketHandle socket,
+                sockaddr* to) override;
 
   void LogBBA(const void* data, std::size_t length) override;
 
@@ -75,8 +80,8 @@ public:
 class BinarySSLCaptureLogger final : public DummyNetworkCaptureLogger
 {
 public:
-  void LogSSLRead(const void* data, std::size_t length, s32 socket) override;
-  void LogSSLWrite(const void* data, std::size_t length, s32 socket) override;
+  void LogSSLRead(const void* data, std::size_t length, Common::SocketHandle socket) override;
+  void LogSSLWrite(const void* data, std::size_t length, Common::SocketHandle socket) override;
 
   NetworkCaptureType GetCaptureType() const override;
 };
@@ -87,13 +92,15 @@ public:
   PCAPSSLCaptureLogger();
   ~PCAPSSLCaptureLogger() override;
 
-  void OnNewSocket(s32 socket) override;
+  void OnNewSocket(Common::SocketHandle socket) override;
 
-  void LogSSLRead(const void* data, std::size_t length, s32 socket) override;
-  void LogSSLWrite(const void* data, std::size_t length, s32 socket) override;
+  void LogSSLRead(const void* data, std::size_t length, Common::SocketHandle socket) override;
+  void LogSSLWrite(const void* data, std::size_t length, Common::SocketHandle socket) override;
 
-  void LogRead(const void* data, std::size_t length, s32 socket, sockaddr* from) override;
-  void LogWrite(const void* data, std::size_t length, s32 socket, sockaddr* to) override;
+  void LogRead(const void* data, std::size_t length, Common::SocketHandle socket,
+               sockaddr* from) override;
+  void LogWrite(const void* data, std::size_t length, Common::SocketHandle socket,
+                sockaddr* to) override;
 
   void LogBBA(const void* data, std::size_t length) override;
 
@@ -106,13 +113,14 @@ private:
     Write,
   };
 
-  void Log(LogType log_type, const void* data, std::size_t length, s32 socket, sockaddr* other);
-  void LogIPv4(LogType log_type, const u8* data, u16 length, s32 socket, const sockaddr_in& from,
-               const sockaddr_in& to);
+  void Log(LogType log_type, const void* data, std::size_t length, Common::SocketHandle socket,
+           sockaddr* other);
+  void LogIPv4(LogType log_type, const u8* data, u16 length, Common::SocketHandle socket,
+               const sockaddr_in& from, const sockaddr_in& to);
 
   std::unique_ptr<Common::PCAP> m_file;
   std::mutex m_io_mutex;
-  std::map<s32, u32> m_read_sequence_number;
-  std::map<s32, u32> m_write_sequence_number;
+  std::map<Common::SocketHandle, u32> m_read_sequence_number;
+  std::map<Common::SocketHandle, u32> m_write_sequence_number;
 };
 }  // namespace Core

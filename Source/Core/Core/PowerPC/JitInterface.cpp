@@ -72,7 +72,7 @@ CPUCoreBase* JitInterface::InitJitCore(PowerPC::CPUCore core)
   return m_jit.get();
 }
 
-CPUCoreBase* JitInterface::GetCore() const
+JitBase* JitInterface::GetCore() const
 {
   return m_jit.get();
 }

@@ -17,7 +17,9 @@
 
 // We really want things like c.w * a.x - a.w * c.x to stay symmetric, so they cancel to zero on
 // degenerate triangles.  Make sure the compiler doesn't optimize in fmas where not requested.
-#ifdef _MSC_VER
+#if defined(__clang__)
+#pragma clang fp contract(off)
+#elif defined(_MSC_VER)
 #pragma fp_contract(off)
 #else
 // GCC doesn't support any in-file way to turn off fp contract yet

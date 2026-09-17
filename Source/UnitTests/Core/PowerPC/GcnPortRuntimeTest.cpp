@@ -135,4 +135,188 @@ TEST(GcnPortRuntime, ShippingJitCacheHookOriginalAndInvalidation)
   std::thread cpu_thread(RunShippingJitScenario);
   cpu_thread.join();
 }
+
+std::vector<u8> BigEndianImage(std::initializer_list<u32> words)
+{
+  std::vector<u8> bytes;
+  bytes.reserve(words.size() * sizeof(u32));
+  for (const u32 word : words)
+  {
+    bytes.push_back(static_cast<u8>(word >> 24));
+    bytes.push_back(static_cast<u8>(word >> 16));
+    bytes.push_back(static_cast<u8>(word >> 8));
+    bytes.push_back(static_cast<u8>(word));
+  }
+  return bytes;
+}
+
+// Proves the public one-block adapter surface (BootAuthenticatedImage, ExecuteJitBlock,
+// ExecuteOriginalOnce, ExecuteRefusedBlock, ExecuteDiagnosticInterpreterBlock, and typed fallback
+// counters) rather than the raw Memory::Write_U32 + PowerPC::SingleStep harness the original
+// ShippingJit test uses. This is still Dolphin's own gtest binary; the outside-library proof lives
+// in gcnport's own dolphin_backend test.
+void RunPublicAdapterScenario()
+{
+  const std::string profile_path = File::CreateTempDir();
+  if (profile_path.empty())
+  {
+    ADD_FAILURE() << "failed to create an isolated Dolphin user directory";
+    return;
+  }
+
+  constexpr u32 PROGRAM_ADDRESS = 0x80004000;
+  constexpr u32 HOOK_ADDRESS = 0x80005000;
+  constexpr u32 PROGRAM_LANDING_PAD_ADDRESS = 0x80006000;
+  // PROGRAM_ADDRESS is the same two-instruction self-loop as RunShippingJitScenario's ENTRY_ADDRESS
+  // body, used only to prove the plain Compiled/CacheHit ExecuteJitBlock contract: a block that
+  // branches back to its own start never needs a second, not-yet-compiled successor block, so it is
+  // the only synthetic shape this slice can bound to exactly one *guest-body* execution per call.
+  //
+  // HOOK_ADDRESS is a separate, straight-line (non-looping) block used only for the hook/
+  // ExecuteOriginalOnce proof. Dolphin's analyzer may merge several passes of a tight reflexive loop
+  // into one compiled unit (observed empirically: a plain two-instruction self-loop's originalSize
+  // came back as a multiple of 2, not exactly 2), and the native-hook guard is emitted at the top of
+  // the generated code, so a merged loop body re-evaluates that guard once per internal pass within a
+  // single ExecuteJitBlock() call. A one-shot ticket armed by ExecuteOriginalOnce would then be
+  // consumed by the first internal pass and leak a real hook invocation on the second. A block with no
+  // back-edge to itself has exactly one guard evaluation per compiled-block execution, so the hook
+  // proof uses HOOK_ADDRESS -> PROGRAM_LANDING_PAD_ADDRESS (itself a harmless branch-to-self stopping
+  // point, never hooked) instead of looping back into the hooked address.
+  std::vector<u8> program = BigEndianImage({ADDI_R3_R3_1, BRANCH_BACK_ONE_INSTRUCTION});
+  program.resize(HOOK_ADDRESS - PROGRAM_ADDRESS, 0);
+  // addi r3,r3,1 ; b PROGRAM_LANDING_PAD_ADDRESS (unconditional forward branch, no back edge).
+  constexpr u32 HOOK_BRANCH_DISPLACEMENT = PROGRAM_LANDING_PAD_ADDRESS - (HOOK_ADDRESS + sizeof(u32));
+  constexpr u32 BRANCH_TO_LANDING_PAD = 0x48000000 | (HOOK_BRANCH_DISPLACEMENT & 0x03FFFFFCu);
+  static_assert((HOOK_BRANCH_DISPLACEMENT & ~0x03FFFFFCu) == 0,
+                "landing pad displacement must fit in the B-form 24-bit field");
+  const std::vector<u8> hook_body_bytes = BigEndianImage({ADDI_R3_R3_1, BRANCH_TO_LANDING_PAD});
+  program.insert(program.end(), hook_body_bytes.begin(), hook_body_bytes.end());
+  program.resize(PROGRAM_LANDING_PAD_ADDRESS - PROGRAM_ADDRESS, 0);
+  const std::vector<u8> landing_pad_bytes = BigEndianImage({BRANCH_TO_SELF});
+  program.insert(program.end(), landing_pad_bytes.begin(), landing_pad_bytes.end());
+  const auto identity = MakeIdentity(2);
+
+  Core::System& system = Core::System::GetInstance();
+
+  const PowerPC::GcnPort::ExecutionIdentity unauthenticated;
+  EXPECT_FALSE(PowerPC::GcnPort::BootAuthenticatedImage(system, unauthenticated, program,
+                                                         PROGRAM_ADDRESS, PROGRAM_ADDRESS)
+                   .ok);
+
+  const auto booted = PowerPC::GcnPort::BootAuthenticatedImage(system, identity, program,
+                                                                 PROGRAM_ADDRESS, PROGRAM_ADDRESS);
+  ASSERT_TRUE(booted.ok) << booted.detail;
+
+  // The process may boot at most one image at a time; a second call must fail rather than
+  // silently reinitializing state the first boot still owns.
+  EXPECT_FALSE(PowerPC::GcnPort::BootAuthenticatedImage(system, identity, program,
+                                                         PROGRAM_ADDRESS, PROGRAM_ADDRESS)
+                   .ok);
+
+  {
+    PowerPC::GcnPort::RuntimeSession runtime(system, identity);
+    auto& state = system.GetPPCState();
+    state.gpr[3] = 0;
+
+    const auto first = runtime.ExecuteJitBlock();
+    EXPECT_EQ(first.kind, PowerPC::GcnPort::JitBlockKind::Compiled);
+    EXPECT_EQ(first.guest_pc, PROGRAM_ADDRESS);
+    // Dolphin's analyzer may merge more than one pass of a tight two-instruction reflexive loop into
+    // a single compiled block; only a multiple of the 2-instruction body is guaranteed.
+    EXPECT_GE(first.instruction_count, 2u);
+    EXPECT_EQ(first.instruction_count % 2, 0u);
+    EXPECT_GE(state.gpr[3], 1u);
+
+    const auto after_first = runtime.GetExecutionCounters();
+    EXPECT_EQ(after_first.jit_blocks_compiled, 1u);
+    EXPECT_EQ(after_first.fallback_events, 0u);
+
+    // A second entry at the same address/feature flags is a cache hit, not a recompile: the block
+    // branches back to its own already-published start, so there is never a second, not-yet-compiled
+    // successor address for this shape.
+    state.pc = PROGRAM_ADDRESS;
+    state.npc = PROGRAM_ADDRESS;
+    state.gpr[3] = 0;
+    const auto second = runtime.ExecuteJitBlock();
+    EXPECT_EQ(second.kind, PowerPC::GcnPort::JitBlockKind::CacheHit);
+    EXPECT_EQ(runtime.GetExecutionCounters().jit_blocks_compiled, after_first.jit_blocks_compiled);
+
+    struct CountingHook
+    {
+      u32 calls = 0;
+      static PowerPC::GcnPort::HookResult Run(void* context, PowerPC::PowerPCState&) noexcept
+      {
+        ++static_cast<CountingHook*>(context)->calls;
+        // Redirect to a separate, unhooked branch-to-self landing pad. LR is never initialized in
+        // this minimal harness (ReturnToCaller would jump to it), and HOOK_ADDRESS's own body already
+        // falls through toward that same landing pad on the unhooked path.
+        return PowerPC::GcnPort::HookResult::ContinueAt(PROGRAM_LANDING_PAD_ADDRESS);
+      }
+    };
+    CountingHook hook;
+    const PowerPC::GcnPort::HookKey key{identity, HOOK_ADDRESS};
+    runtime.InstallNativeHook(key, {.context = &hook, .function = &CountingHook::Run});
+
+    // ExecuteOriginalOnce arms a ticket that must run the ordinary body once WITHOUT ever invoking
+    // the hook callback, proving a real synchronous native -> original -> native continuation
+    // distinct from a hook returning HookAction::RunOriginalOnce from inside its own callback.
+    EXPECT_TRUE(runtime.ExecuteOriginalOnce(key));
+    state.pc = HOOK_ADDRESS;
+    state.npc = HOOK_ADDRESS;
+    state.gpr[3] = 0;
+    const auto ticketed = runtime.ExecuteJitBlock();
+    (void)ticketed;
+    EXPECT_EQ(hook.calls, 0u);
+    EXPECT_EQ(state.gpr[3], 1u);
+    EXPECT_EQ(runtime.GetExecutionCounters().original_tickets_armed, 1u);
+    EXPECT_GE(runtime.GetExecutionCounters().original_entries, 1u);
+
+    // The ticket is single-use: the next dispatch must invoke the hook body normally.
+    state.pc = HOOK_ADDRESS;
+    state.npc = HOOK_ADDRESS;
+    const u64 hooks_executed_before = runtime.GetExecutionCounters().hooks_executed;
+    const auto after_ticket = runtime.ExecuteJitBlock();
+    (void)after_ticket;
+    EXPECT_EQ(hook.calls, 1u);
+    EXPECT_GT(runtime.GetExecutionCounters().hooks_executed, hooks_executed_before);
+
+    // Explicit bounded interpreter entry points, independent of JIT dispatch and each other.
+    const auto refused = runtime.ExecuteRefusedBlock(PROGRAM_ADDRESS, 1);
+    EXPECT_EQ(refused.guest_pc, PROGRAM_ADDRESS);
+    EXPECT_EQ(refused.instruction_count, 1u);
+
+    state.pc = PROGRAM_ADDRESS;
+    state.npc = PROGRAM_ADDRESS;
+    const auto diagnostic = runtime.ExecuteDiagnosticInterpreterBlock(1);
+    EXPECT_EQ(diagnostic.guest_pc, PROGRAM_ADDRESS);
+    EXPECT_EQ(diagnostic.instruction_count, 1u);
+  }
+
+  PowerPC::GcnPort::ShutdownBootedImage(system);
+  File::DeleteDirRecursively(profile_path);
+}
+
+TEST(GcnPortRuntime, PublicAdapterBootExecuteOriginalAndTypedFallback)
+{
+  std::thread cpu_thread(RunPublicAdapterScenario);
+  cpu_thread.join();
+}
+
+// ClassifyFallbackReason is a pure host-side function (no guest execution), so it is verified
+// directly against the real Jit64_Tables.cpp / JitArm64_Tables.cpp opcode-31 fallback lists rather
+// than by provoking a live JIT/interpreter exception path.
+TEST(GcnPortRuntime, ClassifyFallbackReasonMatchesStaticOpcodeTables)
+{
+  using PowerPC::GcnPort::ClassifyFallbackReason;
+  using PowerPC::GcnPort::JitRefusalReason;
+
+  // mfsr r4,0: opcode 31, subop 595 -- supervisor-only segment-register access.
+  EXPECT_EQ(ClassifyFallbackReason(0x7C8004A6), JitRefusalReason::PrivilegedInstruction);
+  // tlbie r5: opcode 31, subop 306.
+  EXPECT_EQ(ClassifyFallbackReason(0x7C002A64), JitRefusalReason::PrivilegedInstruction);
+  // icbi 0,r5: opcode 31, subop 982 -- an ordinary user-mode instruction the JIT never lowers.
+  EXPECT_EQ(ClassifyFallbackReason(0x7C002FAC), JitRefusalReason::UnsupportedInstruction);
+  // addi r3,r3,1: opcode 14, not an opcode-31 fallback at all; must not be misclassified.
+  EXPECT_EQ(ClassifyFallbackReason(ADDI_R3_R3_1), JitRefusalReason::UnsupportedInstruction);
+}
 }  // namespace

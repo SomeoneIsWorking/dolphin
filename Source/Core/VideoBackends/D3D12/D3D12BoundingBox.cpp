@@ -87,8 +87,10 @@ void D3D12BoundingBox::Write(u32 index, std::span<const BBoxType> values)
 
 bool D3D12BoundingBox::CreateBuffers()
 {
-  static constexpr D3D12_HEAP_PROPERTIES gpu_heap_properties = {D3D12_HEAP_TYPE_DEFAULT};
-  static constexpr D3D12_HEAP_PROPERTIES cpu_heap_properties = {D3D12_HEAP_TYPE_READBACK};
+  static constexpr D3D12_HEAP_PROPERTIES gpu_heap_properties = {
+      D3D12_HEAP_TYPE_DEFAULT, D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_MEMORY_POOL_UNKNOWN, 0, 0};
+  static constexpr D3D12_HEAP_PROPERTIES cpu_heap_properties = {
+      D3D12_HEAP_TYPE_READBACK, D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_MEMORY_POOL_UNKNOWN, 0, 0};
   D3D12_RESOURCE_DESC buffer_desc = {D3D12_RESOURCE_DIMENSION_BUFFER,
                                      0,
                                      BUFFER_SIZE,
@@ -107,7 +109,8 @@ bool D3D12BoundingBox::CreateBuffers()
   if (FAILED(hr) || !g_dx_context->GetDescriptorHeapManager().Allocate(&m_gpu_descriptor))
     return false;
 
-  D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc = {DXGI_FORMAT_R32_SINT, D3D12_UAV_DIMENSION_BUFFER};
+  D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc = {
+      DXGI_FORMAT_R32_SINT, D3D12_UAV_DIMENSION_BUFFER, {}};
   uav_desc.Buffer.NumElements = NUM_BBOX_VALUES;
   g_dx_context->GetDevice()->CreateUnorderedAccessView(m_gpu_buffer.Get(), nullptr, &uav_desc,
                                                        m_gpu_descriptor.cpu_handle);

@@ -42,12 +42,12 @@ TAPServerConnection::TAPServerConnection(std::string destination,
 {
 }
 
-static int ConnectToDestination(const std::string& destination)
+static Common::SocketHandle ConnectToDestination(const std::string& destination)
 {
   if (destination.empty())
   {
     ERROR_LOG_FMT(SP1, "Cannot connect: destination is empty\n");
-    return -1;
+    return Common::INVALID_SOCKET_HANDLE;
   }
 
   int ss_size;
@@ -60,7 +60,7 @@ static int ConnectToDestination(const std::string& destination)
     if (colon_offset == std::string::npos)
     {
       ERROR_LOG_FMT(SP1, "Destination IP address does not include port\n");
-      return -1;
+      return Common::INVALID_SOCKET_HANDLE;
     }
 
     sockaddr_in* sin = reinterpret_cast<sockaddr_in*>(&ss);
@@ -69,7 +69,7 @@ static int ConnectToDestination(const std::string& destination)
     if (!dest_ip)
     {
       ERROR_LOG_FMT(SP1, "Destination IP address is not valid\n");
-      return -1;
+      return Common::INVALID_SOCKET_HANDLE;
     }
     sin->sin_addr.s_addr = htonl(dest_ip->toInteger());
     sin->sin_family = AF_INET;
@@ -78,7 +78,7 @@ static int ConnectToDestination(const std::string& destination)
     if (dest_port < 1 || dest_port > 65535)
     {
       ERROR_LOG_FMT(SP1, "Destination port is not valid\n");
-      return -1;
+      return Common::INVALID_SOCKET_HANDLE;
     }
     sin->sin_port = htons(dest_port);
     ss_size = sizeof(*sin);
@@ -91,7 +91,7 @@ static int ConnectToDestination(const std::string& destination)
     if (destination.size() + 1 > sizeof(sun->sun_path))
     {
       ERROR_LOG_FMT(SP1, "Socket path is too long; unable to create tapserver connection\n");
-      return -1;
+      return Common::INVALID_SOCKET_HANDLE;
     }
     sun->sun_family = AF_UNIX;
     std::strcpy(sun->sun_path, destination.c_str());
@@ -101,15 +101,15 @@ static int ConnectToDestination(const std::string& destination)
   else
   {
     ERROR_LOG_FMT(SP1, "UNIX sockets are not supported on Windows\n");
-    return -1;
+    return Common::INVALID_SOCKET_HANDLE;
 #endif
   }
 
-  const int fd = socket(ss.ss_family, SOCK_STREAM, (ss.ss_family == AF_INET) ? IPPROTO_TCP : 0);
-  if (fd == -1)
+  const auto fd = socket(ss.ss_family, SOCK_STREAM, (ss.ss_family == AF_INET) ? IPPROTO_TCP : 0);
+  if (fd == Common::INVALID_SOCKET_HANDLE)
   {
     ERROR_LOG_FMT(SP1, "Couldn't create socket; unable to create tapserver connection\n");
-    return -1;
+    return Common::INVALID_SOCKET_HANDLE;
   }
 
   Common::SetPlatformSocketOptions(fd);
@@ -119,7 +119,7 @@ static int ConnectToDestination(const std::string& destination)
     INFO_LOG_FMT(SP1, "Couldn't connect socket ({}), unable to create tapserver connection\n",
                  Common::StrNetworkError());
     closesocket(fd);
-    return -1;
+    return Common::INVALID_SOCKET_HANDLE;
   }
 
   return fd;
@@ -131,7 +131,7 @@ bool TAPServerConnection::Activate()
     return true;
 
   m_fd = ConnectToDestination(m_destination);
-  if (m_fd < 0)
+  if (m_fd == Common::INVALID_SOCKET_HANDLE)
     return false;
 
   return RecvInit();
@@ -145,14 +145,14 @@ void TAPServerConnection::Deactivate()
     m_read_thread.join();
   m_read_shutdown.Clear();
 
-  if (m_fd >= 0)
+  if (m_fd != Common::INVALID_SOCKET_HANDLE)
     closesocket(m_fd);
-  m_fd = -1;
+  m_fd = Common::INVALID_SOCKET_HANDLE;
 }
 
 bool TAPServerConnection::IsActivated()
 {
-  return (m_fd >= 0);
+  return m_fd != Common::INVALID_SOCKET_HANDLE;
 }
 
 bool TAPServerConnection::RecvInit()
@@ -256,7 +256,7 @@ void TAPServerConnection::ReadThreadHandler()
     timeval timeout;
     timeout.tv_sec = 0;
     timeout.tv_usec = 50000;
-    int select_res = select(m_fd + 1, &rfds, nullptr, nullptr, &timeout);
+    int select_res = select(Common::SelectNfds(m_fd), &rfds, nullptr, nullptr, &timeout);
     if (select_res < 0)
     {
       ERROR_LOG_FMT(SP1, "Can\'t poll tapserver fd: {}", Common::StrNetworkError());

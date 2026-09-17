@@ -16,7 +16,7 @@ bool DescriptorAllocator::Create(ID3D12Device* device, D3D12_DESCRIPTOR_HEAP_TYP
                                  u32 num_descriptors)
 {
   const D3D12_DESCRIPTOR_HEAP_DESC desc = {type, static_cast<UINT>(num_descriptors),
-                                           D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE};
+                                           D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0};
   HRESULT hr = device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&m_descriptor_heap));
   ASSERT_MSG(VIDEO, SUCCEEDED(hr), "Creating descriptor heap for linear allocator failed: {}",
              DX12HRWrap(hr));

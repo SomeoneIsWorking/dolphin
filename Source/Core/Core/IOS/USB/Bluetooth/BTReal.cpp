@@ -412,7 +412,7 @@ bool BluetoothRealDevice::SendHCIStoreLinkKeyCommand()
 
   struct Payload
   {
-    hci_cmd_hdr_t header{HCI_CMD_WRITE_STORED_LINK_KEY};
+    hci_cmd_hdr_t header{HCI_CMD_WRITE_STORED_LINK_KEY, 0};
     hci_write_stored_link_key_cp command{};
     struct LinkKey
     {
@@ -443,7 +443,7 @@ void BluetoothRealDevice::FakeVendorCommandReply(u16 opcode, USB::V0IntrMessage&
 
   struct Payload
   {
-    hci_event_hdr_t header{HCI_EVENT_COMMAND_COMPL};
+    hci_event_hdr_t header{HCI_EVENT_COMMAND_COMPL, 0};
     hci_command_compl_ep command{};
   } payload;
 

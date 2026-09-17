@@ -225,7 +225,9 @@ void OnScreenUI::DrawImGui()
     float u_rcp_viewport_size_mul2[2];
     float padding[2];
   };
-  ImGuiUbo ubo = {{1.0f / m_backbuffer_width * 2.0f, 1.0f / m_backbuffer_height * 2.0f}};
+  ImGuiUbo ubo = {{1.0f / static_cast<float>(m_backbuffer_width) * 2.0f,
+                   1.0f / static_cast<float>(m_backbuffer_height) * 2.0f},
+                  {}};
 
   // Set up common state for drawing.
   g_gfx->SetPipeline(m_imgui_pipeline.get());

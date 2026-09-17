@@ -23,6 +23,7 @@
 #include "Core/Core.h"
 #include "Core/CoreTiming.h"
 #include "Core/HLE/HLE.h"
+#include "Core/HW/DVD/AMMediaboardSocket.h"
 #include "Core/HW/EXI/EXI_DeviceBaseboard.h"
 #include "Core/HW/Memmap.h"
 #include "Core/IOS/Network/Socket.h"
@@ -91,11 +92,6 @@ MediaBoardRange::MediaBoardRange(u32 start_, u32 size_, std::span<u8> buffer_)
 }
 
 using Common::SEND_FLAGS;
-
-enum class GuestSocket : s32
-{
-};
-static constexpr auto INVALID_GUEST_SOCKET = GuestSocket(-1);
 
 struct TimeVal
 {
@@ -264,7 +260,7 @@ static GuestSocket GetAvailableGuestSocket()
     s_next_valid_fd = (s_next_valid_fd + 1) % std::size(s_sockets);
     if (i < FIRST_VALID_FD)
       continue;
-    if (s_sockets[i] == SOCKET_ERROR)
+    if (s_sockets[i] == INVALID_SOCKET)
       return GuestSocket(i);
   }
 
@@ -363,33 +359,27 @@ static GuestSocket socket_(int af, int type, int protocol)
   if (guest_socket == INVALID_GUEST_SOCKET)
     return INVALID_GUEST_SOCKET;
 
-  const s32 host_fd = socket(af, type, protocol);
-  if (host_fd < 0)
+  const auto result = AcquireMappedSocket(
+      s_sockets, guest_socket, [&] { return socket(af, type, protocol); },
+      Common::SetPlatformSocketOptions);
+  if (result == INVALID_GUEST_SOCKET)
   {
     ERROR_LOG_FMT(AMMEDIABOARD, "GC-AM: failed to create socket ({})", Common::StrNetworkError());
     return INVALID_GUEST_SOCKET;
   }
 
-  Common::SetPlatformSocketOptions(host_fd);
-
-  s_sockets[u32(guest_socket)] = host_fd;
-  return guest_socket;
+  return result;
 }
 
-static GuestSocket accept_(int fd, sockaddr* addr, socklen_t* len)
+static GuestSocket accept_(Common::SocketHandle fd, sockaddr* addr, socklen_t* len)
 {
   const auto guest_socket = GetAvailableGuestSocket();
   if (guest_socket == INVALID_GUEST_SOCKET)
     return INVALID_GUEST_SOCKET;
 
-  const s32 host_fd = accept(fd, addr, len);
-  if (host_fd < 0)
-    return INVALID_GUEST_SOCKET;
-
-  Common::SetPlatformSocketOptions(host_fd);
-
-  s_sockets[u32(guest_socket)] = host_fd;
-  return guest_socket;
+  return AcquireMappedSocket(
+      s_sockets, guest_socket, [&] { return accept(fd, addr, len); },
+      Common::SetPlatformSocketOptions);
 }
 
 static inline void PrintMBBuffer(u32 address, u32 length)
@@ -452,7 +442,7 @@ void Init()
   s_network_buffer.fill(0);
   s_network_command_buffer.fill(0);
   s_firmware.fill(-1);
-  s_sockets.fill(SOCKET_ERROR);
+  s_sockets.fill(INVALID_SOCKET);
   s_allnet_buffer.fill(0);
   s_allnet_settings.fill(0);
 
@@ -651,7 +641,9 @@ static bool BindEphemeralPort(SOCKET host_socket, Common::IPAddress ip_address,
 
   sockaddr_in addr = {
       .sin_family = AF_INET,
+      .sin_port = 0,
       .sin_addr = std::bit_cast<in_addr>(ip_address),
+      .sin_zero = {},
   };
 
   while (attempt_count-- != 0)
@@ -681,6 +673,9 @@ static s32 NetDIMMConnect(GuestSocket guest_socket, const GuestSocketAddress& gu
 
   sockaddr_in addr{
       .sin_family = guest_addr.ip_family,
+      .sin_port = 0,
+      .sin_addr = {},
+      .sin_zero = {},
   };
 
   // Adjust destination IP and port.
@@ -766,7 +761,7 @@ static s32 NetDIMMConnect(GuestSocket guest_socket, const GuestSocketAddress& gu
     return SOCKET_ERROR;
   }
 
-  WSAPOLLFD pfds[1]{{.fd = host_socket, .events = POLLOUT}};
+  WSAPOLLFD pfds[1]{{.fd = host_socket, .events = POLLOUT, .revents = 0}};
 
   // TODO: Possible race between this socket's SetTimeOuts and others'
   const auto timeout =
@@ -829,7 +824,7 @@ static GuestSocket NetDIMMAccept(GuestSocket guest_socket, u8* guest_addr_ptr,
   }
 
   const auto host_socket = GetHostSocket(guest_socket);
-  WSAPOLLFD pfds[1]{{.fd = host_socket, .events = POLLIN}};
+  WSAPOLLFD pfds[1]{{.fd = host_socket, .events = POLLIN, .revents = 0}};
 
   // FYI: Currently using a 0ms timeout to make accept calls always non-blocking.
   constexpr auto timeout = std::chrono::milliseconds{0};
@@ -878,9 +873,11 @@ static GuestSocket NetDIMMAccept(GuestSocket guest_socket, u8* guest_addr_ptr,
     return client_sock;
 
   GuestSocketAddress guest_addr{
+      .unknown_value = 0,
       .ip_family = u8(addr.sin_family),
       .port = addr.sin_port,
       .ip_address = std::bit_cast<Common::IPAddress>(addr.sin_addr),
+      .padding = {},
   };
 
   if (const auto adjusted_ipv4port =
@@ -943,6 +940,7 @@ static u32 NetDIMMBind(GuestSocket guest_socket, const GuestSocketAddress& guest
       .sin_family = guest_addr.ip_family,
       .sin_port = adjusted_ipv4port.port,
       .sin_addr = std::bit_cast<in_addr>(adjusted_ipv4port.ip_address),
+      .sin_zero = {},
   };
 
   const int bind_result = bind(host_socket, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr));
@@ -1062,7 +1060,7 @@ static void AMMBCommandClosesocket(u32 parameter_offset)
   NOTICE_LOG_FMT(AMMEDIABOARD_NET, "GC-AM: closesocket( {}({}) ):{}", fd, u32(guest_socket), ret);
 
   if (u32(guest_socket) < std::size(s_sockets))
-    s_sockets[u32(guest_socket)] = SOCKET_ERROR;
+    s_sockets[u32(guest_socket)] = INVALID_SOCKET;
 
   s_media_buffer_32[1] = ret;
   s_last_error = SSC_SUCCESS;
@@ -1266,7 +1264,7 @@ static void AMMBCommandSelect(u32 parameter_offset)
                 readfds_offset, writefds_offset, exceptfds_offset, timeout_offset, timeout.count());
 
   // Fill with the host sockets for each guest socket less-than `nfds` in each GuestFdSet.
-  std::vector<WSAPOLLFD> pollfds(nfds, WSAPOLLFD{.fd = INVALID_SOCKET});
+  std::vector<WSAPOLLFD> pollfds(nfds, WSAPOLLFD{.fd = INVALID_SOCKET, .events = 0, .revents = 0});
 
   FillPollFdsFromGuestFdSet(pollfds, readfds_offset, POLLIN);
   FillPollFdsFromGuestFdSet(pollfds, writefds_offset, POLLOUT);
@@ -2328,10 +2326,10 @@ static void CloseAllSockets()
 {
   for (u32 i = FIRST_VALID_FD; i < std::size(s_sockets); ++i)
   {
-    if (s_sockets[i] != SOCKET_ERROR)
+    if (s_sockets[i] != INVALID_SOCKET)
     {
       closesocket(s_sockets[i]);
-      s_sockets[i] = SOCKET_ERROR;
+      s_sockets[i] = INVALID_SOCKET;
     }
   }
 }
@@ -2392,7 +2390,7 @@ void DoState(PointerWrap& p)
   {
     for (u32 i = FIRST_VALID_FD; i < std::size(s_sockets); ++i)
     {
-      if (s_sockets[i] != SOCKET_ERROR)
+      if (s_sockets[i] != INVALID_SOCKET)
         created_sockets.SetFd(GuestSocket(i));
     }
   }
@@ -2413,12 +2411,12 @@ void DoState(PointerWrap& p)
   }
 }
 
-s32 DebuggerGetSocket(u32 triforce_fd)
+Common::SocketHandle DebuggerGetSocket(u32 triforce_fd)
 {
   if (triforce_fd < std::size(s_sockets))
-    return s32(s_sockets[triforce_fd]);
+    return s_sockets[triforce_fd];
 
   WARN_LOG_FMT(AMMEDIABOARD, "GC-AM: Bad socket fd used by the debugger: {}", triforce_fd);
-  return -1;
+  return Common::INVALID_SOCKET_HANDLE;
 }
 }  // namespace AMMediaboard

@@ -56,7 +56,8 @@ OSVERSIONINFOW GetOSVersion()
   // PEB may have faked data if the binary is launched with "compatibility mode" enabled.
   // Try to read real OS version from registry.
   const char* subkey = R"(SOFTWARE\Microsoft\Windows NT\CurrentVersion)";
-  OSVERSIONINFOW info{.dwOSVersionInfoSize = sizeof(info)};
+  OSVERSIONINFOW info{};
+  info.dwOSVersionInfoSize = sizeof(info);
   std::string build_str;
   if (!ReadValue(&info.dwMajorVersion, subkey, "CurrentMajorVersionNumber") ||
       !ReadValue(&info.dwMinorVersion, subkey, "CurrentMinorVersionNumber") ||

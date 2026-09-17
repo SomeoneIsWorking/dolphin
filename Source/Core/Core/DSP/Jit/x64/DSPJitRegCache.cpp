@@ -8,6 +8,7 @@
 
 #include "Common/Assert.h"
 #include "Common/Logging/Log.h"
+#include "Common/MemberOffset.h"
 
 #include "Core/DSP/DSPCore.h"
 #include "Core/DSP/Jit/x64/DSPEmitter.h"
@@ -21,11 +22,7 @@ namespace DSP::JIT::x64
 constexpr std::array<X64Reg, 15> s_allocation_order = {
     {R8, R9, R10, R11, R12, R13, R14, R15, RSI, RDI, RBX, RCX, RDX, RAX, RBP}};
 
-#ifdef __GNUC__
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Winvalid-offsetof"
-#endif
-static Gen::OpArg GetRegisterPointer(size_t reg)
+Gen::OpArg GetRegisterMemory(const SDSP& state, size_t reg)
 {
   switch (reg)
   {
@@ -33,81 +30,75 @@ static Gen::OpArg GetRegisterPointer(size_t reg)
   case DSP_REG_AR1:
   case DSP_REG_AR2:
   case DSP_REG_AR3:
-    return MDisp(
-        R15, static_cast<int>(offsetof(SDSP, r.ar) + sizeof(SDSP::r.ar[0]) * (reg - DSP_REG_AR0)));
+    return MDisp(R15, static_cast<int>(Common::MemberOffset(state, state.r.ar[reg - DSP_REG_AR0])));
   case DSP_REG_IX0:
   case DSP_REG_IX1:
   case DSP_REG_IX2:
   case DSP_REG_IX3:
-    return MDisp(
-        R15, static_cast<int>(offsetof(SDSP, r.ix) + sizeof(SDSP::r.ix[0]) * (reg - DSP_REG_IX0)));
+    return MDisp(R15, static_cast<int>(Common::MemberOffset(state, state.r.ix[reg - DSP_REG_IX0])));
   case DSP_REG_WR0:
   case DSP_REG_WR1:
   case DSP_REG_WR2:
   case DSP_REG_WR3:
-    return MDisp(
-        R15, static_cast<int>(offsetof(SDSP, r.wr) + sizeof(SDSP::r.wr[0]) * (reg - DSP_REG_WR0)));
+    return MDisp(R15, static_cast<int>(Common::MemberOffset(state, state.r.wr[reg - DSP_REG_WR0])));
   case DSP_REG_ST0:
   case DSP_REG_ST1:
   case DSP_REG_ST2:
   case DSP_REG_ST3:
-    return MDisp(
-        R15, static_cast<int>(offsetof(SDSP, r.st) + sizeof(SDSP::r.st[0]) * (reg - DSP_REG_ST0)));
+    return MDisp(R15, static_cast<int>(Common::MemberOffset(state, state.r.st[reg - DSP_REG_ST0])));
   case DSP_REG_ACH0:
   case DSP_REG_ACH1:
-    return MDisp(R15, static_cast<int>(offsetof(SDSP, r.ac[0].h) +
-                                       sizeof(SDSP::r.ac[0]) * (reg - DSP_REG_ACH0)));
+    return MDisp(R15,
+                 static_cast<int>(Common::MemberOffset(state, state.r.ac[reg - DSP_REG_ACH0].h)));
   case DSP_REG_CR:
-    return MDisp(R15, static_cast<int>(offsetof(SDSP, r.cr)));
+    return MDisp(R15, static_cast<int>(Common::MemberOffset(state, state.r.cr)));
   case DSP_REG_SR:
-    return MDisp(R15, static_cast<int>(offsetof(SDSP, r.sr)));
+    return MDisp(R15, static_cast<int>(Common::MemberOffset(state, state.r.sr)));
   case DSP_REG_PRODL:
-    return MDisp(R15, static_cast<int>(offsetof(SDSP, r.prod.l)));
+    return MDisp(R15, static_cast<int>(Common::MemberOffset(state, state.r.prod.l)));
   case DSP_REG_PRODM:
-    return MDisp(R15, static_cast<int>(offsetof(SDSP, r.prod.m)));
+    return MDisp(R15, static_cast<int>(Common::MemberOffset(state, state.r.prod.m)));
   case DSP_REG_PRODH:
-    return MDisp(R15, static_cast<int>(offsetof(SDSP, r.prod.h)));
+    return MDisp(R15, static_cast<int>(Common::MemberOffset(state, state.r.prod.h)));
   case DSP_REG_PRODM2:
-    return MDisp(R15, static_cast<int>(offsetof(SDSP, r.prod.m2)));
+    return MDisp(R15, static_cast<int>(Common::MemberOffset(state, state.r.prod.m2)));
   case DSP_REG_AXL0:
   case DSP_REG_AXL1:
-    return MDisp(R15, static_cast<int>(offsetof(SDSP, r.ax[0].l) +
-                                       sizeof(SDSP::r.ax[0]) * (reg - DSP_REG_AXL0)));
+    return MDisp(R15,
+                 static_cast<int>(Common::MemberOffset(state, state.r.ax[reg - DSP_REG_AXL0].l)));
   case DSP_REG_AXH0:
   case DSP_REG_AXH1:
-    return MDisp(R15, static_cast<int>(offsetof(SDSP, r.ax[0].h) +
-                                       sizeof(SDSP::r.ax[0]) * (reg - DSP_REG_AXH0)));
+    return MDisp(R15,
+                 static_cast<int>(Common::MemberOffset(state, state.r.ax[reg - DSP_REG_AXH0].h)));
   case DSP_REG_ACL0:
   case DSP_REG_ACL1:
-    return MDisp(R15, static_cast<int>(offsetof(SDSP, r.ac[0].l) +
-                                       sizeof(SDSP::r.ac[0]) * (reg - DSP_REG_ACL0)));
+    return MDisp(R15,
+                 static_cast<int>(Common::MemberOffset(state, state.r.ac[reg - DSP_REG_ACL0].l)));
   case DSP_REG_ACM0:
   case DSP_REG_ACM1:
-    return MDisp(R15, static_cast<int>(offsetof(SDSP, r.ac[0].m) +
-                                       sizeof(SDSP::r.ac[0]) * (reg - DSP_REG_ACM0)));
+    return MDisp(R15,
+                 static_cast<int>(Common::MemberOffset(state, state.r.ac[reg - DSP_REG_ACM0].m)));
   case DSP_REG_AX0_32:
   case DSP_REG_AX1_32:
-    return MDisp(R15, static_cast<int>(offsetof(SDSP, r.ax[0].val) +
-                                       sizeof(SDSP::r.ax[0]) * (reg - DSP_REG_AX0_32)));
+    return MDisp(
+        R15, static_cast<int>(Common::MemberOffset(state, state.r.ax[reg - DSP_REG_AX0_32].val)));
   case DSP_REG_ACC0_64:
   case DSP_REG_ACC1_64:
-    return MDisp(R15, static_cast<int>(offsetof(SDSP, r.ac[0].val) +
-                                       sizeof(SDSP::r.ac[0]) * (reg - DSP_REG_ACC0_64)));
+    return MDisp(
+        R15, static_cast<int>(Common::MemberOffset(state, state.r.ac[reg - DSP_REG_ACC0_64].val)));
   case DSP_REG_PROD_64:
-    return MDisp(R15, static_cast<int>(offsetof(SDSP, r.prod.val)));
+    return MDisp(R15, static_cast<int>(Common::MemberOffset(state, state.r.prod.val)));
   default:
     ASSERT_MSG(DSPLLE, 0, "cannot happen");
     return M(static_cast<void*>(nullptr));
   }
 }
-#ifdef __GNUC__
-#pragma GCC diagnostic pop
-#endif
 
 #define STATIC_REG_ACCS
 // #undef STATIC_REG_ACCS
 
-DSPJitRegCache::DSPJitRegCache(DSPEmitter& emitter) : m_emitter(emitter), m_is_temporary(false)
+DSPJitRegCache::DSPJitRegCache(DSPEmitter& emitter, const SDSP& state)
+    : m_emitter(emitter), m_is_temporary(false)
 {
   for (X64CachedReg& xreg : m_xregs)
   {
@@ -145,7 +136,7 @@ DSPJitRegCache::DSPJitRegCache(DSPEmitter& emitter) : m_emitter(emitter), m_is_t
 
   for (size_t i = 0; i < m_regs.size(); i++)
   {
-    m_regs[i].mem = GetRegisterPointer(i);
+    m_regs[i].mem = GetRegisterMemory(state, i);
     m_regs[i].size = 0;
     m_regs[i].dirty = false;
     m_regs[i].used = false;

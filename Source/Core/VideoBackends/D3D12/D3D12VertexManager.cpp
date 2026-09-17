@@ -58,8 +58,8 @@ bool VertexManager::Initialize()
       return false;
     }
 
-    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {it.second, D3D12_SRV_DIMENSION_BUFFER,
-                                                D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING};
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {
+        it.second, D3D12_SRV_DIMENSION_BUFFER, D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, {}};
     srv_desc.Buffer.NumElements =
         m_texel_stream_buffer.GetSize() / GetTexelBufferElementSize(it.first);
     g_dx_context->GetDevice()->CreateShaderResourceView(m_texel_stream_buffer.GetBuffer(),
@@ -72,8 +72,10 @@ bool VertexManager::Initialize()
     return false;
   }
 
-  D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {DXGI_FORMAT_R32_UINT, D3D12_SRV_DIMENSION_BUFFER,
-                                              D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING};
+  D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {DXGI_FORMAT_R32_UINT,
+                                              D3D12_SRV_DIMENSION_BUFFER,
+                                              D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+                                              {}};
   srv_desc.Buffer.NumElements = m_vertex_stream_buffer.GetSize() / sizeof(u32);
   g_dx_context->GetDevice()->CreateShaderResourceView(m_vertex_stream_buffer.GetBuffer(), &srv_desc,
                                                       m_vertex_srv.cpu_handle);

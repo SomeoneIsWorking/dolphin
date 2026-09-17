@@ -324,7 +324,7 @@ static void BPWritten(PixelShaderManager& pixel_shader_manager, XFStateManager& 
         static const int own_mode = getenv("SUNBRIGHT_EFB_OWN") ? 1 : 0;
         if (g_sb_efb_redirect_inbetween && !own_mode)
         {
-          g_sb_efb_redirects++;   // skipped this in-between copy
+          g_sb_efb_redirects = g_sb_efb_redirects + 1;  // skipped this in-between copy
         }
         else
         {

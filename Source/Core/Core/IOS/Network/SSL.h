@@ -18,6 +18,7 @@
 // clang-format on
 
 #include "Common/CommonTypes.h"
+#include "Common/SocketContext.h"
 #include "Core/IOS/Device.h"
 #include "Core/IOS/IOS.h"
 
@@ -74,7 +75,7 @@ struct WII_SSL
   mbedtls_x509_crt clicert{};
   mbedtls_pk_context pk{};
   int sockfd = -1;
-  int hostfd = -1;
+  Common::SocketHandle hostfd = Common::INVALID_SOCKET_HANDLE;
   std::string hostname;
   bool active = false;
 };

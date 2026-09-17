@@ -434,8 +434,8 @@ private:
         }
 
         const int32_t button_name_idx = static_cast<int32_t>(lbl);
-        if (lbl != WGI::GameControllerButtonLabel::None &&
-            button_name_idx < wgi_button_names.size())
+        if (lbl != WGI::GameControllerButtonLabel::None && button_name_idx >= 0 &&
+            std::cmp_less(button_name_idx, wgi_button_names.size()))
           AddInput(new NamedButton(&button, wgi_button_names[button_name_idx]));
         else
           AddInput(new IndexedButton(&button, i));
