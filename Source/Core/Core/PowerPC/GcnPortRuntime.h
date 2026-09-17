@@ -109,6 +109,12 @@ struct ExecutionCounters
   u64 fallback_events = 0;
   std::array<u64, kJitRefusalReasonCount> fallback_events_by_reason{};
   u64 original_tickets_armed = 0;
+  // Distinct from original_entries (which also counts the ExecuteOriginalOnce ticket path and the
+  // in-callback HookAction::RunOriginalOnce path): this counts only calls made through
+  // CallOriginalSynchronously, i.e. a native hook calling the original guest body as a subroutine
+  // and getting control back in the same callback frame.
+  u64 synchronous_original_calls = 0;
+  u64 synchronous_original_instructions = 0;
 };
 
 enum class JitBlockKind
@@ -217,6 +223,28 @@ public:
   // the original body once, then resume native code. Returns false if the key is invalid or has no
   // installed hook to suppress.
   [[nodiscard]] bool ExecuteOriginalOnce(const HookKey& key);
+
+  // Runs the ORIGINAL guest body at key.address as a synchronous subroutine call, for use FROM
+  // INSIDE a NativeHook callback (the classic "superCall": a native override that wants to run
+  // native code, call through to the real guest function, then run more native code and decide the
+  // outcome, all inside one callback invocation). ExecuteOriginalOnce/RunOriginalOnce cannot do this:
+  // both only arm a one-shot suppression that the OUTER ExecuteJitBlock driver loop consumes on its
+  // NEXT dispatch, so control never returns to the callback that requested it.
+  //
+  // This is safe to call reentrantly from inside a hook callback because it never re-enters the JIT
+  // dispatcher or its generated-code call stack: it drives Dolphin's plain interpreter directly,
+  // starting at key.address, until the guest body executes a control-flow instruction that returns to
+  // the caller's current link register (an ordinary ABI `blr` epilogue) or `maximum_instruction_count`
+  // is reached, whichever comes first. Exceeding the bound without returning is a hard fault, not a
+  // silently truncated call -- a real callee that does not return within the bound is a caller error,
+  // not an expected outcome to swallow.
+  //
+  // PC/NPC are restored to their pre-call values on return so the enclosing hook callback retains
+  // full control over the final HookResult (e.g. ReturnToCaller, ContinueAt); every other guest
+  // register and memory side effect made by the original body is real and observable, matching what
+  // an ordinary guest-to-guest call would have produced.
+  [[nodiscard]] InterpretedBlockResult CallOriginalSynchronously(const HookKey& key,
+                                                                  u32 maximum_instruction_count);
 
   // Generated code calls this ABI boundary. true means fall through to the ordinary translated
   // instruction; false means the hook updated PC and the generated guard must redispatch.
