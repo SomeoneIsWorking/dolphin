@@ -13,6 +13,7 @@
 #include "Core/CoreTiming.h"
 #include "Core/HW/CPU.h"
 #include "Core/HW/Memmap.h"
+#include "Core/PowerPC/Gekko.h"
 #include "Core/PowerPC/GcnPortRuntime.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/System.h"
@@ -299,6 +300,123 @@ void RunPublicAdapterScenario()
 TEST(GcnPortRuntime, PublicAdapterBootExecuteOriginalAndTypedFallback)
 {
   std::thread cpu_thread(RunPublicAdapterScenario);
+  cpu_thread.join();
+}
+
+// Proves CallOriginalSynchronously's "superCall" contract: a native hook callback does native work,
+// calls through to the ORIGINAL guest body as a subroutine, gets control back in the SAME callback
+// invocation once the guest body returns, does more native work, and only then decides the final
+// HookResult. This is distinct from ExecuteOriginalOnce/HookAction::RunOriginalOnce, both of which
+// only arm a suppression the OUTER ExecuteJitBlock driver consumes on its next dispatch and never
+// hand control back to the requesting callback.
+void RunSynchronousOriginalCallScenario()
+{
+  constexpr u32 SUPER_CALL_HOOK_ADDRESS = 0x80003000;
+  constexpr u32 SUPER_CALL_RETURN_ADDRESS = 0x80004000;
+  constexpr u32 ADDI_R3_R3_10 = 0x3863000A;
+  constexpr u32 BLR = 0x4e800020;
+
+  const std::string profile_path = File::CreateTempDir();
+  if (profile_path.empty())
+  {
+    ADD_FAILURE() << "failed to create an isolated Dolphin user directory";
+    return;
+  }
+
+  Core::DeclareAsCPUThread();
+  UICommon::SetUserDirectory(profile_path);
+  Config::Init();
+  SConfig::Init();
+
+  Core::System& system = Core::System::GetInstance();
+  system.GetMemory().Init();
+  system.GetCoreTiming().Init();
+  system.GetCPU().Init(PowerPC::DefaultCPUCore());
+
+  // The ORIGINAL guest body: addi r3,r3,10 ; blr. This is what the hook calls through to.
+  system.GetMemory().Write_U32(ADDI_R3_R3_10, SUPER_CALL_HOOK_ADDRESS);
+  system.GetMemory().Write_U32(BLR, SUPER_CALL_HOOK_ADDRESS + sizeof(u32));
+  // Landing pad the hook's ReturnToCaller result resumes at; a harmless branch-to-self stopping
+  // point, matching the same pattern the other scenarios in this file use.
+  system.GetMemory().Write_U32(BRANCH_TO_SELF, SUPER_CALL_RETURN_ADDRESS);
+
+  auto& state = system.GetPPCState();
+  auto& power_pc = system.GetPowerPC();
+  const auto identity = MakeIdentity(4);
+  PowerPC::GcnPort::RuntimeSession runtime(system, identity);
+
+  struct SuperCallHook
+  {
+    PowerPC::GcnPort::RuntimeSession* session = nullptr;
+    PowerPC::GcnPort::HookKey key;
+    u32 gpr3_before_call = 0;
+    u32 gpr3_after_call = 0;
+    u32 original_instruction_count = 0;
+    bool native_before_ran = false;
+    bool native_after_ran = false;
+
+    static PowerPC::GcnPort::HookResult Run(void* context, PowerPC::PowerPCState& state) noexcept
+    {
+      auto& hook = *static_cast<SuperCallHook*>(context);
+      // Native work BEFORE calling through to the original guest body.
+      hook.native_before_ran = true;
+      state.gpr[3] += 1;
+      hook.gpr3_before_call = state.gpr[3];
+
+      const auto result = hook.session->CallOriginalSynchronously(hook.key, 4);
+      hook.original_instruction_count = result.instruction_count;
+      hook.gpr3_after_call = state.gpr[3];
+
+      // Native work AFTER the original body returned control to this same callback invocation.
+      state.gpr[3] += 1000;
+      hook.native_after_ran = true;
+      return PowerPC::GcnPort::HookResult::ReturnToCaller();
+    }
+  };
+
+  SuperCallHook hook;
+  hook.session = &runtime;
+  hook.key = PowerPC::GcnPort::HookKey{identity, SUPER_CALL_HOOK_ADDRESS};
+  runtime.InstallNativeHook(hook.key, {.context = &hook, .function = &SuperCallHook::Run});
+
+  state.gpr[3] = 100;
+  state.spr[SPR_LR] = SUPER_CALL_RETURN_ADDRESS;
+  state.pc = SUPER_CALL_HOOK_ADDRESS;
+  state.npc = SUPER_CALL_HOOK_ADDRESS;
+  power_pc.SingleStep();
+
+  EXPECT_TRUE(hook.native_before_ran);
+  EXPECT_TRUE(hook.native_after_ran);
+  // 100 (initial) + 1 (native work before the call) == 101, observed by the callback right before
+  // calling through.
+  EXPECT_EQ(hook.gpr3_before_call, 101u);
+  // 101 + 10 (the ORIGINAL guest body's own addi) == 111, observed by the callback right after the
+  // call returns -- this is the assertion that the guest body's side effect genuinely happened
+  // BETWEEN the two halves of native work, inside the same callback invocation.
+  EXPECT_EQ(hook.gpr3_after_call, 111u);
+  EXPECT_EQ(hook.original_instruction_count, 2u);
+  // 111 + 1000 (native work after the call) == 1111, the final guest-visible state.
+  EXPECT_EQ(state.gpr[3], 1111u);
+  EXPECT_EQ(state.pc, SUPER_CALL_RETURN_ADDRESS);
+
+  const auto counters = runtime.GetExecutionCounters();
+  EXPECT_EQ(counters.hooks_executed, 1u);
+  EXPECT_EQ(counters.synchronous_original_calls, 1u);
+  EXPECT_EQ(counters.synchronous_original_instructions, 2u);
+  EXPECT_GE(counters.original_entries, 1u);
+
+  system.GetCPU().Shutdown();
+  system.GetCoreTiming().Shutdown();
+  system.GetMemory().Shutdown();
+  SConfig::Shutdown();
+  Config::Shutdown();
+  Core::UndeclareAsCPUThread();
+  File::DeleteDirRecursively(profile_path);
+}
+
+TEST(GcnPortRuntime, HookCallsOriginalSynchronouslyThenResumesNativeWork)
+{
+  std::thread cpu_thread(RunSynchronousOriginalCallScenario);
   cpu_thread.join();
 }
 

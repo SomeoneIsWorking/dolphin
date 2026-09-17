@@ -300,6 +300,48 @@ bool RuntimeSession::ExecuteOriginalOnce(const HookKey& key)
   return true;
 }
 
+InterpretedBlockResult RuntimeSession::CallOriginalSynchronously(const HookKey& key,
+                                                                  u32 maximum_instruction_count)
+{
+  Require(maximum_instruction_count != 0, "synchronous original-call instruction bound is zero");
+  Require(key.IsValid() && key.identity == m_identity,
+          "synchronous original call used a stale or mismatched identity/key");
+  Require(m_hooks.contains(key),
+          "synchronous original call has no active hook installed at its own key");
+
+  PowerPCState& state = m_system.GetPPCState();
+  const u32 saved_pc = state.pc;
+  const u32 saved_npc = state.npc;
+  const u32 return_address = state.spr[SPR_LR];
+
+  state.pc = key.address;
+  state.npc = key.address;
+
+  Interpreter& interpreter = m_system.GetInterpreter();
+  u32 executed = 0;
+  bool returned = false;
+  while (executed < maximum_instruction_count)
+  {
+    interpreter.SingleStep();
+    ++executed;
+    if (state.pc == return_address)
+    {
+      returned = true;
+      break;
+    }
+  }
+  Require(returned,
+          "synchronous original call exceeded its bounded instruction budget without returning");
+
+  state.pc = saved_pc;
+  state.npc = saved_npc;
+
+  ++m_counters.original_entries;
+  ++m_counters.synchronous_original_calls;
+  m_counters.synchronous_original_instructions += executed;
+  return {.guest_pc = key.address, .instruction_count = executed};
+}
+
 bool RuntimeSession::RunHookFromJit(RuntimeSession* session, u32 address) noexcept
 {
   if (!session)
