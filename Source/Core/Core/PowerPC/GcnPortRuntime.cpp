@@ -30,7 +30,12 @@
 #include "DiscIO/Volume.h"
 #include "Core/HW/DVD/DVDInterface.h"
 #include "Core/System.h"
+#include "Core/DSPEmulator.h"
+#include "Core/HW/DSP.h"
 #include "InputCommon/ControllerInterface/ControllerInterface.h"
+#include "VideoCommon/AsyncRequests.h"
+#include "VideoCommon/Fifo.h"
+#include "VideoCommon/VideoBackendBase.h"
 
 namespace PowerPC::GcnPort
 {
@@ -120,6 +125,10 @@ private:
 // uninstall it.
 bool g_exception_handler_installed = false;
 
+// Tracks whether the media bring-up ran, so shutdown tears down exactly what boot brought up.
+// Kept separate from g_hardware_initialized because apply_media_init is independently selectable.
+bool g_media_initialized = false;
+
 // A bare in-memory-image boot has no configured title identity or user directory and does not own
 // input, persistent storage, or audio output (see docs/dolphin-embedding-contract.md). Force real,
 // title-neutral "no device attached" hardware states before HW::Init() attaches its Config-selected
@@ -196,6 +205,74 @@ HookResult HookResult::RunOriginalOnce()
 // g_image_booted, which a failed boot never sets, so calling it would silently do nothing and leave
 // HW::Init's device owners and CoreTiming's event registry live -- which the NEXT boot then hits as
 // "CoreTiming Event is already registered", far from the boot that actually leaked it.
+// Brings up the periodic media devices Dolphin's own EmuThread initializes AROUND HW::Init().
+//
+// HW::Init() builds the MMIO handler table and SystemTimers::Init() schedules the VI, DSP and audio
+// DMA events, so a title's interrupts already arrive without this. What it does not do is give those
+// devices anything to talk to. Measured against a retail title: with no FIFO consumer, a GXDrawDone
+// -- which writes a draw-done token and then sleeps until the PixelEngine finish interrupt reports
+// the GPU has drained past it -- never wakes, because no interrupt is ever raised for a token
+// nothing consumed. Every other thread was idle on its own work queue, so the whole title sat in
+// the SDK's scheduler idle loop while VI interrupts kept arriving at 60 Hz. DSPManager::Init() has
+// the matching gap: it constructs a DSPEmulator without booting its ucode, so a title's DSP
+// handshake never completes and whichever thread performs it waits the same way. Both are separate calls in Core.cpp's EmuThread (GetInitializedVideoGuard, then
+// GetDSPEmulator()->Initialize), which a bare adapter boot never runs.
+//
+// The video backend is pinned to Null. WindowSystemInfo defaults to WindowSystemType::Headless, and
+// Null implements the AbstractGfx interface without opening a host device or a window -- the same
+// shape as the NullSound and no-memory-card states this file already forces. A consumer that owns a
+// real renderer replaces the backend selection; it still needs SOME AbstractGfx owner here, because
+// the FIFO's consumer is what keeps the guest's GP writes draining.
+//
+// Single-core is the only mode this adapter supports: ExecuteJitBlock's contract is "run exactly one
+// observable block on the calling thread", which a separate GPU thread would make unobservable. So
+// the calling thread is declared as the GPU thread and AsyncRequests is put in passthrough, exactly
+// as Core.cpp does when IsDualCoreMode() is false.
+bool InitializeMediaDevices(Core::System& system)
+{
+  // SetCurrent, not SetBaseOrCurrent: Config::Init() creates only the CurrentRun layer, and the
+  // Base layer a frontend would add through UICommon::Init()/GenerateBaseConfigLoader does not exist
+  // in this embedding, so SetBaseOrCurrent dereferences a null layer. This matches how
+  // ForceNoHostBackedGameCubeDevices above pins its own device selections.
+  Config::SetCurrent(Config::MAIN_GFX_BACKEND, std::string("Null"));
+
+  const WindowSystemInfo headless_wsi{};
+  VideoBackendBase::PopulateBackendInfo(headless_wsi);
+  if (g_video_backend == nullptr)
+  {
+    return false;
+  }
+
+  WindowSystemInfo prepared_wsi(headless_wsi);
+  g_video_backend->PrepareWindow(prepared_wsi);
+
+  Core::DeclareAsGPUThread();
+  AsyncRequests::GetInstance()->SetPassthrough(true);
+  if (!g_video_backend->Initialize(prepared_wsi))
+  {
+    return false;
+  }
+
+  // The DSP thread is refused for the same reason the GPU thread is: it would retire guest-visible
+  // work outside the calling thread's control.
+  if (!system.GetDSP().GetDSPEmulator()->Initialize(system.IsWii(), false))
+  {
+    g_video_backend->Shutdown();
+    return false;
+  }
+
+  AudioCommon::PostInitSoundStream(system);
+  system.GetFifo().Prepare();
+  return true;
+}
+
+void ShutdownMediaDevices(Core::System& system)
+{
+  system.GetFifo().Shutdown();
+  g_video_backend->Shutdown();
+  Core::UndeclareAsGPUThread();
+}
+
 void TearDownIncompleteBringUp(Core::System& system, bool hardware_initialized)
 {
   if (hardware_initialized)
@@ -204,6 +281,11 @@ void TearDownIncompleteBringUp(Core::System& system, bool hardware_initialized)
     {
       EMM::UninstallExceptionHandler();
       g_exception_handler_installed = false;
+    }
+    if (g_media_initialized)
+    {
+      ShutdownMediaDevices(system);
+      g_media_initialized = false;
     }
     HW::Shutdown(system);
     AudioCommon::ShutdownSoundStream(system);
@@ -237,6 +319,12 @@ BootResult BootAuthenticatedImage(Core::System& system, const ExecutionIdentity&
   // DVDInterface and the DVD thread are among HW::Init's device owners, so there is nothing to mount
   // a disc into without it. Refuse here, before any global Dolphin state is touched, rather than
   // booting successfully with the disc silently absent.
+  if (options.apply_media_init && !options.apply_hardware_init)
+  {
+    return {.ok = false,
+            .detail = "media init requires apply_hardware_init, which owns the devices it drives"};
+  }
+
   if (!options.disc_image_path.empty() && !options.apply_hardware_init)
   {
     return {.ok = false,
@@ -290,6 +378,15 @@ BootResult BootAuthenticatedImage(Core::System& system, const ExecutionIdentity&
     {
       EMM::InstallExceptionHandler();
       g_exception_handler_installed = true;
+    }
+    if (options.apply_media_init)
+    {
+      if (!InitializeMediaDevices(system))
+      {
+        TearDownIncompleteBringUp(system, true);
+        return {.ok = false, .detail = "could not bring up the headless video backend or the DSP"};
+      }
+      g_media_initialized = true;
     }
   }
   else
@@ -385,6 +482,11 @@ void ShutdownBootedImage(Core::System& system) noexcept
     {
       EMM::UninstallExceptionHandler();
       g_exception_handler_installed = false;
+    }
+    if (g_media_initialized)
+    {
+      ShutdownMediaDevices(system);
+      g_media_initialized = false;
     }
     HW::Shutdown(system);
     AudioCommon::ShutdownSoundStream(system);
