@@ -19,6 +19,9 @@
 #include "Core/System.h"
 #include "InputCommon/ControllerInterface/ControllerInterface.h"
 #include "UICommon/UICommon.h"
+#include "VideoCommon/AbstractGfx.h"
+#include "VideoCommon/Present.h"
+#include "VideoCommon/VideoBackendBase.h"
 
 namespace
 {
@@ -904,3 +907,69 @@ TEST(GcnPortRuntime, BootAuthenticatedImageWithoutHardwareInitFaultsOnMmioAccess
       "");
 }
 }  // namespace
+
+// HW::Init builds the MMIO table and SystemTimers::Init schedules the periodic events, but neither
+// gives those devices a consumer: the GP FIFO has no reader and the DSP object is constructed
+// without booting its ucode. Against exact GMSE01 that combination is invisible from outside -- the
+// title reaches the SDK's idle loop with every thread blocked while VI interrupts keep arriving at
+// 60 Hz, which looks identical to a title that is simply waiting on disc data.
+//
+// The contract this pins is that apply_media_init brings those consumers up headlessly, that guest
+// execution still works with a GPU thread declared on the calling thread, that shutdown hands them
+// back so a second boot in the same process starts clean, and that asking for media without the
+// hardware that owns it is refused rather than half-applied.
+void RunHeadlessMediaDevicesScenario()
+{
+  const std::string profile_path = File::CreateTempDir();
+  if (profile_path.empty())
+  {
+    ADD_FAILURE() << "failed to create an isolated Dolphin user directory";
+    return;
+  }
+
+  constexpr u32 PROGRAM_ADDRESS = 0x8000d000;
+  constexpr u32 BRANCH_BACK_THREE_INSTRUCTIONS = 0x4bfffff4;
+  const std::vector<u8> program = BigEndianImage(
+      {ADDI_R3_R3_1, ADDI_R3_R3_1, ADDI_R3_R3_1, BRANCH_BACK_THREE_INSTRUCTIONS});
+  const auto identity = MakeIdentity(9);
+
+  Core::System& system = Core::System::GetInstance();
+
+  const auto without_hardware = PowerPC::GcnPort::BootAuthenticatedImage(
+      system, identity, program, PROGRAM_ADDRESS, PROGRAM_ADDRESS,
+      PowerPC::GcnPort::GameCubeBootOptions{.apply_os_init = true, .apply_media_init = true});
+  EXPECT_FALSE(without_hardware.ok)
+      << "media init was accepted without the hardware devices it drives";
+  EXPECT_EQ(g_gfx, nullptr) << "a refused boot still brought a video backend up";
+
+  const auto booted = PowerPC::GcnPort::BootAuthenticatedImage(
+      system, identity, program, PROGRAM_ADDRESS, PROGRAM_ADDRESS,
+      PowerPC::GcnPort::GameCubeBootOptions{
+          .apply_os_init = true, .apply_hardware_init = true, .apply_media_init = true});
+  ASSERT_TRUE(booted.ok) << booted.detail;
+
+  EXPECT_NE(g_video_backend, nullptr) << "no video backend was selected";
+  EXPECT_NE(g_gfx, nullptr) << "the GP FIFO was left without a consumer";
+  EXPECT_NE(g_presenter, nullptr) << "the video backend was selected but never initialized";
+
+  // Execution has to keep working with the calling thread declared as the GPU thread; a batch that
+  // retires nothing would mean the media bring-up broke dispatch rather than completing it.
+  PowerPC::GcnPort::RuntimeSession runtime(system, identity);
+  constexpr u64 REQUESTED_BLOCKS = 1000;
+  const auto batch = runtime.ExecuteJitBlocks(REQUESTED_BLOCKS);
+  EXPECT_FALSE(batch.backend_fault) << batch.detail;
+  EXPECT_GE(batch.blocks_executed, REQUESTED_BLOCKS)
+      << "guest execution stopped once a video backend owned the FIFO";
+
+  PowerPC::GcnPort::ShutdownBootedImage(system);
+
+  EXPECT_EQ(g_gfx, nullptr) << "ShutdownBootedImage leaked a video backend into the next boot";
+
+  File::DeleteDirRecursively(profile_path);
+}
+
+TEST(GcnPortRuntime, MediaInitOwnsHeadlessVideoAndDspOrRefuses)
+{
+  std::thread cpu_thread(RunHeadlessMediaDevicesScenario);
+  cpu_thread.join();
+}

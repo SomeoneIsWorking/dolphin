@@ -214,11 +214,12 @@ struct GameCubeBootOptions
   // CoreTiming/CPU calls, exactly once, before the image copy, matching Dolphin's own EmuThread
   // order).
   //
-  // `HW::Init` on its own does not construct a host video backend, select DSP HLE/LLE threading, or
-  // open any real input device: those live in separate calls Dolphin's own `EmuThread` makes AROUND
-  // `HW::Init` (`g_video_backend->Initialize`, `DSPEmulator::Initialize`), none of which this function
-  // or `gcnport` calls — matching this project's scope of owning execution, not rendering/audio/input
-  // (see docs/dolphin-embedding-contract.md). `AudioInterfaceManager::Init` (one of `HW::Init`'s own
+  // `HW::Init` on its own does not construct a host video backend or boot the DSP: those live in
+  // separate calls Dolphin's own `EmuThread` makes AROUND `HW::Init`
+  // (`g_video_backend->Initialize`, `DSPEmulator::Initialize`), and `apply_media_init` below selects
+  // them. It does open no real input device by itself; this flag brings the `ControllerInterface` up
+  // in its headless form because one of `HW::Init`'s own device owners requires it.
+  // `AudioInterfaceManager::Init` (one of `HW::Init`'s own
   // device owners) unconditionally dereferences `system.GetSoundStream()`, so a `SoundStream` object
   // must already exist; this function calls `AudioCommon::InitSoundStream` itself for exactly that
   // reason, with the selected backend forced to Dolphin's own maintained "No Audio Output" (NullSound)
@@ -244,6 +245,27 @@ struct GameCubeBootOptions
   // apply_hardware_init, because DVDInterface and the DVD thread are among HW::Init's device owners;
   // asking for a disc without it is refused rather than silently ignored.
   std::string disc_image_path;
+
+  // `apply_media_init` brings up the two periodic media devices Dolphin's own `EmuThread`
+  // initializes around `HW::Init`: the video backend (pinned to Dolphin's maintained headless Null
+  // backend) and the DSP emulator, followed by `Fifo::Prepare`.
+  //
+  // `HW::Init` and `SystemTimers::Init` already give a title working VI, DSP and audio-DMA
+  // interrupts without this, so it is not needed to make time pass. What it supplies is a consumer
+  // for those devices. Without a video backend the GP FIFO has no reader, so a title that writes
+  // display lists eventually fills it and blocks; without `DSPEmulator::Initialize` the DSP object
+  // `HW::Init` constructed never boots its ucode, so the SDK's DSP handshake never completes and
+  // whichever thread performs it waits forever. Both failures look identical from outside: every
+  // thread blocked while the scheduler idles and VI keeps ticking.
+  //
+  // It defaults to false so a caller running a synthetic PPC test program that touches neither is
+  // unaffected, and it requires `apply_hardware_init`, whose devices it consumes. It also pins
+  // single-core: the calling thread is declared as the GPU thread and `AsyncRequests` is put in
+  // passthrough, because `ExecuteJitBlock`'s "exactly one observable block on the calling thread"
+  // contract cannot hold if a separate GPU or DSP thread retires guest-visible work. A consumer that
+  // owns a real renderer replaces the backend selection, but still needs an `AbstractGfx` owner
+  // here, because that is what keeps the guest's GP writes draining.
+  bool apply_media_init = false;
 };
 
 [[nodiscard]] BootResult BootAuthenticatedImage(Core::System& system,
