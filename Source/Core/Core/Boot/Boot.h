@@ -171,6 +171,15 @@ public:
   // before transferring control; it carries no per-title state.
   static void SetupGameCubeBS2Registers(Core::System& system);
 
+  // Exposes the exact GameCube low-memory OS globals CBoot::EmulatedBS2_GC writes before jumping to
+  // a disc's DOL entry point, for the same raw-image caller as SetupGameCubeBS2Registers above.
+  // These are the values real BS2/IPL leaves behind and that every retail title's SDK then reads
+  // back from fixed addresses: physical memory size at 0x80000028 (__OSPhysicalMemSize), console
+  // type, ARAM size, the bus and CPU clock speeds at 0x800000F8/0x800000FC (the SDK derives
+  // OS_TIMER_CLOCK from the bus clock, so leaving it zero corrupts every tick/time conversion), and
+  // the default rfi exception handlers. Like the register setup, this carries no per-title state.
+  static void SetupGCMemory(Core::System& system, const Core::CPUThreadGuard& guard);
+
 private:
   static bool DVDRead(Core::System& system, const DiscIO::VolumeDisc& disc, u64 dvd_offset,
                       u32 output_address, u32 length, const DiscIO::Partition& partition);
@@ -198,7 +207,6 @@ private:
                           const std::vector<DiscIO::Riivolution::Patch>& riivolution_patches);
   static bool Load_BS2(Core::System& system, const std::string& boot_rom_filename);
 
-  static void SetupGCMemory(Core::System& system, const Core::CPUThreadGuard& guard);
   static bool SetupWiiMemory(Core::System& system, IOS::HLE::IOSC::ConsoleType console_type);
 };
 

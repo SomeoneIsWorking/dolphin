@@ -339,6 +339,20 @@ void RunGameCubeOsInitScenario()
   EXPECT_EQ(ppc_state.spr[SPR_DBAT1U], 0xc0001fffu);
   EXPECT_EQ(ppc_state.spr[SPR_DBAT1L], 0x0000002au);
 
+  // The registers are only half of what BS2 leaves behind. The SDK reads these low-memory globals
+  // back by fixed address, and derives OS_TIMER_CLOCK from the bus clock at 0x800000F8 -- so leaving
+  // that one zero does not fail loudly, it silently corrupts every tick and time conversion a title
+  // makes. CBoot::SetupGCMemory's own constants (Boot_BS2Emu.cpp) are the reference.
+  auto& memory = system.GetMemory();
+  EXPECT_EQ(memory.Read_U32(0x80000020), 0x0D15EA5Eu);  // booted from bootrom
+  EXPECT_EQ(memory.Read_U32(0x80000028), memory.GetRamSizeReal());  // physical memory size
+  EXPECT_EQ(memory.Read_U32(0x800000d0), 0x01000000u);  // ARAM size
+  EXPECT_EQ(memory.Read_U32(0x800000F8), 0x09a7ec80u);  // bus clock speed
+  EXPECT_EQ(memory.Read_U32(0x800000FC), 0x1cf7c580u);  // CPU clock speed
+  EXPECT_EQ(memory.Read_U32(0x80000300), 0x4c000064u);  // default DSI handler: rfi
+  EXPECT_EQ(memory.Read_U32(0x80000800), 0x4c000064u);  // default FPU handler: rfi
+  EXPECT_EQ(memory.Read_U32(0x80000C00), 0x4c000064u);  // default syscall handler: rfi
+
   PowerPC::GcnPort::ShutdownBootedImage(system);
   File::DeleteDirRecursively(profile_path);
 }
@@ -375,6 +389,13 @@ void RunGameCubeOsInitDefaultOffScenario()
   EXPECT_EQ(ppc_state.msr.IR, 0u);
   EXPECT_EQ(ppc_state.spr[SPR_IBAT0U], 0u);
   EXPECT_EQ(ppc_state.spr[SPR_DBAT0U], 0u);
+  // The low-memory OS globals are part of the same opt-in, so a caller that did not ask for
+  // GameCube OS init must not find BS2's values in memory either -- otherwise the assertions above
+  // would pass against a boot that quietly applied half of it.
+  auto& memory = system.GetMemory();
+  EXPECT_EQ(memory.Read_U32(0x80000020), 0u);
+  EXPECT_EQ(memory.Read_U32(0x80000028), 0u);
+  EXPECT_EQ(memory.Read_U32(0x800000F8), 0u);
 
   PowerPC::GcnPort::ShutdownBootedImage(system);
   File::DeleteDirRecursively(profile_path);

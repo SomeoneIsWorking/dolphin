@@ -306,7 +306,21 @@ BootResult BootAuthenticatedImage(Core::System& system, const ExecutionIdentity&
   system.GetMemory().CopyToEmu(load_address, image.data(), image.size());
 
   if (apply_gamecube_os_init)
+  {
     CBoot::SetupGameCubeBS2Registers(system);
+
+    // The registers alone are not what BS2 leaves behind. The SDK reads fixed low-memory globals
+    // back by address -- __OSPhysicalMemSize at 0x80000028, __OSBusClock at 0x800000F8, the ARAM
+    // size, console type, and the default rfi exception handlers -- and derives OS_TIMER_CLOCK from
+    // the bus clock, so leaving these zero silently corrupts every tick and time conversion a title
+    // makes. Reuse Dolphin's own maintained writer rather than restating the constants here.
+    //
+    // Must follow the register setup: these are effective-address writes, and without the BATs and
+    // MSR.DR that SetupGameCubeBS2Registers installs there is no translation for 0x800000xx at all.
+    // It touches only the OS globals below 0x80003000, never the region a raw image is loaded into.
+    const Core::CPUThreadGuard guard(system);
+    CBoot::SetupGCMemory(system, guard);
+  }
 
   auto& state = system.GetPPCState();
   state.pc = entry_point;
