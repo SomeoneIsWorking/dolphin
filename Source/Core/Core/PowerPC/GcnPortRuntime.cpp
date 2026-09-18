@@ -82,6 +82,36 @@ void RescheduleBlockBound(Core::System& system, u64, s64)
   system.GetCoreTiming().ScheduleEvent(1, g_block_bound_event);
 }
 
+// Lifts the one-block slice cap for the duration of a batch and restores it afterwards. Removing the
+// bounding event outright, rather than rescheduling it further out, is deliberate: CoreTiming already
+// sizes a slice from the next genuinely scheduled event and caps it at its own MAX_SLICE_LENGTH, so
+// with our event gone the batch runs on exactly the slice lengths ordinary Dolphin execution would
+// use. Choosing some larger interval here instead would invent a second, competing slice policy.
+// Nothing can re-arm the event while it is removed, because only its own callback reschedules it.
+class LiftedBlockBound final
+{
+public:
+  explicit LiftedBlockBound(Core::System& system) : m_system(system)
+  {
+    m_system.GetCoreTiming().RemoveEvent(g_block_bound_event);
+  }
+
+  ~LiftedBlockBound()
+  {
+    auto& core_timing = m_system.GetCoreTiming();
+    core_timing.RemoveEvent(g_block_bound_event);
+    core_timing.ScheduleEvent(1, g_block_bound_event);
+  }
+
+  LiftedBlockBound(const LiftedBlockBound&) = delete;
+  LiftedBlockBound& operator=(const LiftedBlockBound&) = delete;
+  LiftedBlockBound(LiftedBlockBound&&) = delete;
+  LiftedBlockBound& operator=(LiftedBlockBound&&) = delete;
+
+private:
+  Core::System& m_system;
+};
+
 // Whether this process's SIGSEGV/SIGBUS fastmem handler is currently installed. Tracked separately
 // from g_hardware_initialized because EMM::IsExceptionHandlerSupported() can be false on a host
 // without this backend, in which case nothing was actually installed and Shutdown must not try to
@@ -586,6 +616,53 @@ bool RuntimeSession::RunHook(u32 address) noexcept
     return true;
   }
   Require(false, "native hook returned an unknown action");
+}
+
+JitBatchOutcome RuntimeSession::ExecuteJitBlocks(u64 minimum_blocks)
+{
+  JitBatchOutcome outcome;
+  outcome.guest_pc = m_system.GetPPCState().pc;
+
+  if (!m_jit)
+  {
+    outcome.backend_fault = true;
+    outcome.detail = "host JIT backend is unavailable";
+    return outcome;
+  }
+  if (minimum_blocks == 0)
+  {
+    outcome.backend_fault = true;
+    outcome.detail = "a batch must be asked for at least one block";
+    return outcome;
+  }
+  if (!m_pending_original_tickets.empty())
+  {
+    outcome.backend_fault = true;
+    outcome.detail = "a one-shot original ticket is armed; consume it with ExecuteJitBlock first";
+    return outcome;
+  }
+
+  const u64 executions_before = m_counters.jit_block_executions;
+  {
+    const LiftedBlockBound lifted(m_system);
+    while (m_counters.jit_block_executions - executions_before < minimum_blocks)
+    {
+      const u64 executions_before_slice = m_counters.jit_block_executions;
+      m_system.GetPowerPC().SingleStep();
+      if (m_counters.jit_block_executions == executions_before_slice)
+      {
+        // A whole slice that retired no block at all will not start retiring them by being repeated,
+        // and looping on it would hang the caller instead of reporting the condition. Stop and say
+        // so; blocks_executed below reports exactly how far the batch actually got.
+        outcome.detail = "a full slice retired no guest block";
+        break;
+      }
+    }
+  }
+
+  outcome.blocks_executed = m_counters.jit_block_executions - executions_before;
+  outcome.guest_pc = m_system.GetPPCState().pc;
+  return outcome;
 }
 
 void RuntimeSession::RecordJitBlockExecution(u32 address) noexcept
