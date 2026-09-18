@@ -321,6 +321,14 @@ bool CBoot::EmulatedBS2_GC(Core::System& system, const Core::CPUThreadGuard& gua
 
   DVDReadDiscID(system, volume, 0x00000000);
 
+  return LoadGameCubeDiscViaApploader(system, guard, volume, riivolution_patches);
+}
+
+bool CBoot::LoadGameCubeDiscViaApploader(
+    Core::System& system, const Core::CPUThreadGuard& guard, const DiscIO::VolumeDisc& volume,
+    const std::vector<DiscIO::Riivolution::Patch>& riivolution_patches)
+{
+  auto& ppc_state = system.GetPPCState();
   auto& memory = system.GetMemory();
   bool streaming = memory.Read_U8(0x80000008);
   if (streaming)

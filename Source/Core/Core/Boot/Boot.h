@@ -187,6 +187,16 @@ public:
   static bool DVDReadDiscID(Core::System& system, const DiscIO::VolumeDisc& disc,
                             u32 output_address);
 
+  // Exposes the disc-loading tail of CBoot::EmulatedBS2_GC, which that function now calls rather
+  // than duplicating: the streaming audio-buffer configuration, the BS2 stack and small-data-area
+  // register values a GameCube apploader is entered with, and the apploader run itself. An embedder
+  // that boots a title's own pre-extracted executable still needs this, because the apploader is
+  // what loads the disc's file system table and publishes its low-memory pointers -- without it
+  // DVDConvertPathToEntrynum walks a null FST and every file lookup a title makes fails.
+  static bool LoadGameCubeDiscViaApploader(
+      Core::System& system, const Core::CPUThreadGuard& guard, const DiscIO::VolumeDisc& disc,
+      const std::vector<DiscIO::Riivolution::Patch>& riivolution_patches);
+
 private:
   static bool DVDRead(Core::System& system, const DiscIO::VolumeDisc& disc, u64 dvd_offset,
                       u32 output_address, u32 length, const DiscIO::Partition& partition);
