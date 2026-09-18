@@ -177,6 +177,22 @@ void ForceNoHostBackedGameCubeDevices()
 }
 }  // namespace
 
+const char* ToString(JitRefusalReason reason) noexcept
+{
+  switch (reason)
+  {
+  case JitRefusalReason::UnsupportedInstruction:
+    return "unsupported_instruction";
+  case JitRefusalReason::UnsafeInstructionFetch:
+    return "unsafe_instruction_fetch";
+  case JitRefusalReason::UnsafeHostExecution:
+    return "unsafe_host_execution";
+  case JitRefusalReason::PrivilegedInstruction:
+    return "privileged_instruction";
+  }
+  return "invalid_refusal_reason";
+}
+
 JitRefusalReason ClassifyFallbackReason(u32 instruction_hex) noexcept
 {
   // Table entries pulled from Jit64_Tables.cpp / JitArm64_Tables.cpp: every opcode-31 extended
@@ -961,7 +977,20 @@ void RuntimeSession::RecordJitBlockExecution(u32 address) noexcept
 
 void RuntimeSession::RecordFallback(u32 address, JitRefusalReason reason) noexcept
 {
-  (void)address;
+  const auto site = m_fallback_sites.find(address);
+  if (site != m_fallback_sites.end())
+  {
+    ++site->second.events;
+  }
+  else if (m_fallback_sites.size() < kMaxTrackedFallbackSites)
+  {
+    m_fallback_sites.emplace(address, FallbackSite{.events = 1, .reason = reason});
+  }
+  else
+  {
+    ++m_counters.fallback_sites_not_tracked;
+  }
+
   ++m_counters.fallback_events;
   ++m_counters.fallback_events_by_reason[static_cast<std::size_t>(reason)];
   m_last_fallback_reason = reason;

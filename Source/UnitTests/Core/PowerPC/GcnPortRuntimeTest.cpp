@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <cstring>
+#include <span>
 #include <string>
 #include <thread>
 #include <vector>
@@ -146,7 +147,7 @@ TEST(GcnPortRuntime, ShippingJitCacheHookOriginalAndInvalidation)
   cpu_thread.join();
 }
 
-std::vector<u8> BigEndianImage(std::initializer_list<u32> words)
+std::vector<u8> BigEndianImage(std::span<const u32> words)
 {
   std::vector<u8> bytes;
   bytes.reserve(words.size() * sizeof(u32));
@@ -158,6 +159,11 @@ std::vector<u8> BigEndianImage(std::initializer_list<u32> words)
     bytes.push_back(static_cast<u8>(word));
   }
   return bytes;
+}
+
+std::vector<u8> BigEndianImage(std::initializer_list<u32> words)
+{
+  return BigEndianImage(std::span<const u32>(words.begin(), words.size()));
 }
 
 // Proves the public one-block adapter surface (BootAuthenticatedImage, ExecuteJitBlock,
@@ -949,6 +955,93 @@ TEST(GcnPortRuntime, HookCallsOriginalSynchronouslyThenResumesNativeWork)
 // ClassifyFallbackReason is a pure host-side function (no guest execution), so it is verified
 // directly against the real Jit64_Tables.cpp / JitArm64_Tables.cpp opcode-31 fallback lists rather
 // than by provoking a live JIT/interpreter exception path.
+// A fallback total says the JIT declined something; it cannot say whether that was one instruction
+// in a hot loop or thousands of distinct routines, and those want opposite work. The session
+// therefore keeps per-address counts -- bounded, because a diagnostic must not grow without limit
+// inside a long run, and audited, because a list that silently stopped growing would be
+// indistinguishable from one that was complete.
+//
+// Driven through the shipping path: Jit64::FallBackToInterpreter is what emits the record, so the
+// program is a run of real opcode-31 fallback instructions and the counts come from executing it.
+void RunFallbackSiteAccountingScenario()
+{
+  const std::string profile_path = File::CreateTempDir();
+  if (profile_path.empty())
+  {
+    ADD_FAILURE() << "failed to create an isolated Dolphin user directory";
+    return;
+  }
+
+  constexpr u32 PROGRAM_ADDRESS = 0x8000f000;
+  constexpr u32 MFSR_R4_0 = 0x7c8004a6;  // opcode 31, subop 595: on Jit64's fallback list.
+  // More distinct fallback addresses than the session will track, so the truncation path is the
+  // one under test rather than a case that happens to fit.
+  constexpr std::size_t FALLBACK_INSTRUCTIONS = PowerPC::GcnPort::kMaxTrackedFallbackSites + 8;
+
+  std::vector<u32> instructions(FALLBACK_INSTRUCTIONS, MFSR_R4_0);
+  instructions.push_back(BRANCH_TO_SELF);
+  const std::vector<u8> program = BigEndianImage(instructions);
+  const auto identity = MakeIdentity(12);
+  Core::System& system = Core::System::GetInstance();
+
+  ASSERT_TRUE(PowerPC::GcnPort::BootAuthenticatedImage(system, identity, program, PROGRAM_ADDRESS,
+                                                       PROGRAM_ADDRESS)
+                  .ok);
+  {
+    PowerPC::GcnPort::RuntimeSession runtime(system, identity);
+    constexpr u64 BLOCK_BUDGET = 4096;
+    const auto batch = runtime.ExecuteJitBlocks(BLOCK_BUDGET);
+    ASSERT_FALSE(batch.backend_fault) << batch.detail;
+    EXPECT_GT(batch.blocks_executed, 0u);
+
+    const auto& counters = runtime.GetExecutionCounters();
+    const auto& sites = runtime.GetFallbackSites();
+
+    ASSERT_GT(counters.fallback_events, 0u);
+    // mfsr is supervisor-only, so every one of these is a PrivilegedInstruction refusal -- a
+    // non-default reason, which is what makes "counted under the right reason" a real assertion
+    // rather than one the zero-initialised enum would satisfy on its own.
+    EXPECT_EQ(counters.fallback_events_by_reason[static_cast<std::size_t>(
+                  PowerPC::GcnPort::JitRefusalReason::PrivilegedInstruction)],
+              counters.fallback_events);
+    EXPECT_EQ(counters.fallback_events_by_reason[static_cast<std::size_t>(
+                  PowerPC::GcnPort::JitRefusalReason::UnsupportedInstruction)],
+              0u);
+
+    // Bounded, and honest about it: the list stops at the cap and the overflow is counted rather
+    // than dropped, so a truncated view can always be told from a complete one.
+    EXPECT_EQ(sites.size(), PowerPC::GcnPort::kMaxTrackedFallbackSites);
+    EXPECT_GT(counters.fallback_sites_not_tracked, 0u);
+
+    // Every event landed somewhere. This is what makes the per-site view a measurement rather than
+    // a sample: tracked counts plus untracked events must reconstruct the total exactly.
+    u64 tracked_events = 0;
+    for (const auto& [address, site] : sites)
+    {
+      tracked_events += site.events;
+      EXPECT_EQ(site.reason, PowerPC::GcnPort::JitRefusalReason::PrivilegedInstruction);
+      EXPECT_GE(address, PROGRAM_ADDRESS);
+      EXPECT_LT(address, PROGRAM_ADDRESS + program.size());
+    }
+    EXPECT_EQ(tracked_events + counters.fallback_sites_not_tracked, counters.fallback_events);
+
+    // The reason names are owned beside the reason, so a consumer reporting fallbacks never has to
+    // restate them.
+    EXPECT_STREQ(
+        PowerPC::GcnPort::ToString(PowerPC::GcnPort::JitRefusalReason::PrivilegedInstruction),
+        "privileged_instruction");
+  }
+
+  PowerPC::GcnPort::ShutdownBootedImage(system);
+  File::DeleteDirRecursively(profile_path);
+}
+
+TEST(GcnPortRuntime, FallbackAccountingNamesItsSitesAndReportsItsOwnTruncation)
+{
+  std::thread cpu_thread(RunFallbackSiteAccountingScenario);
+  cpu_thread.join();
+}
+
 TEST(GcnPortRuntime, ClassifyFallbackReasonMatchesStaticOpcodeTables)
 {
   using PowerPC::GcnPort::ClassifyFallbackReason;
