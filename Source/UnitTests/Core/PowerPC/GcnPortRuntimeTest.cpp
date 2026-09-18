@@ -298,7 +298,7 @@ void RunPublicAdapterScenario()
   File::DeleteDirRecursively(profile_path);
 }
 
-// Proves BootAuthenticatedImage's apply_gamecube_os_init flag actually installs the exact retail
+// Proves BootAuthenticatedImage's apply_os_init option actually installs the exact retail
 // GameCube MSR/BAT configuration CBoot::EmulatedBS2_GC applies before jumping to a disc's DOL entry
 // point (see CBoot::SetupGameCubeBS2Registers), rather than merely compiling. Asserting the raw SPR
 // contents matches this file's own convention of testing through the public one-block adapter
@@ -320,7 +320,7 @@ void RunGameCubeOsInitScenario()
   Core::System& system = Core::System::GetInstance();
   const auto booted = PowerPC::GcnPort::BootAuthenticatedImage(
       system, identity, program, PROGRAM_ADDRESS, PROGRAM_ADDRESS,
-      /*apply_gamecube_os_init=*/true);
+      PowerPC::GcnPort::GameCubeBootOptions{.apply_os_init = true});
   ASSERT_TRUE(booted.ok) << booted.detail;
 
   const auto& ppc_state = system.GetPPCState();
@@ -363,7 +363,7 @@ TEST(GcnPortRuntime, BootAuthenticatedImageAppliesGameCubeOsInitRegisters)
   cpu_thread.join();
 }
 
-// The default (apply_gamecube_os_init=false, the parameter's default value) must be unchanged: a
+// The default (apply_os_init left false, the option's default value) must be unchanged: a
 // caller booting a small synthetic PPC test program that never relies on effective-address
 // translation keeps real-mode MSR/BAT state exactly as before this flag existed.
 void RunGameCubeOsInitDefaultOffScenario()
@@ -452,7 +452,7 @@ void RunBlockBoundaryAndCoreTimingScenario()
   Core::System& system = Core::System::GetInstance();
   const auto booted = PowerPC::GcnPort::BootAuthenticatedImage(
       system, identity, program, PROGRAM_ADDRESS, PROGRAM_ADDRESS,
-      /*apply_gamecube_os_init=*/true);
+      PowerPC::GcnPort::GameCubeBootOptions{.apply_os_init = true});
   ASSERT_TRUE(booted.ok) << booted.detail;
 
   PowerPC::GcnPort::RuntimeSession runtime(system, identity);
@@ -521,7 +521,7 @@ void RunHeadlessControllerInterfaceScenario()
   Core::System& system = Core::System::GetInstance();
   const auto booted = PowerPC::GcnPort::BootAuthenticatedImage(
       system, identity, program, PROGRAM_ADDRESS, PROGRAM_ADDRESS,
-      /*apply_gamecube_os_init=*/true, /*apply_gamecube_hardware_init=*/true);
+      PowerPC::GcnPort::GameCubeBootOptions{.apply_os_init = true, .apply_hardware_init = true});
   ASSERT_TRUE(booted.ok) << booted.detail;
 
   EXPECT_TRUE(g_controller_interface.IsInit())
@@ -570,7 +570,7 @@ void RunBatchedExecutionScenario()
   Core::System& system = Core::System::GetInstance();
   const auto booted = PowerPC::GcnPort::BootAuthenticatedImage(
       system, identity, program, PROGRAM_ADDRESS, PROGRAM_ADDRESS,
-      /*apply_gamecube_os_init=*/true);
+      PowerPC::GcnPort::GameCubeBootOptions{.apply_os_init = true});
   ASSERT_TRUE(booted.ok) << booted.detail;
 
   PowerPC::GcnPort::RuntimeSession runtime(system, identity);
@@ -609,6 +609,60 @@ void RunBatchedExecutionScenario()
 TEST(GcnPortRuntime, ExecuteJitBlocksChainsBlocksAndRestoresTheOneBlockCap)
 {
   std::thread cpu_thread(RunBatchedExecutionScenario);
+  cpu_thread.join();
+}
+
+// A disc is a consumer-supplied path, never anything gcnport ships, so the cases this can check
+// without a game image are exactly the refusals -- and those are the ones that matter, because each
+// one would otherwise be a boot that succeeds with the disc silently absent and fails much later
+// inside the title's own disc-error path, where the cause is no longer visible.
+void RunDiscRefusalScenario()
+{
+  const std::string profile_path = File::CreateTempDir();
+  if (profile_path.empty())
+  {
+    ADD_FAILURE() << "failed to create an isolated Dolphin user directory";
+    return;
+  }
+
+  constexpr u32 PROGRAM_ADDRESS = 0x8000c000;
+  const std::vector<u8> program = BigEndianImage({BRANCH_TO_SELF});
+  const auto identity = MakeIdentity(8);
+  Core::System& system = Core::System::GetInstance();
+
+  // Asking for a disc without the hardware init that owns DVDInterface has no correct answer, so it
+  // must be refused rather than quietly booting with no drive to mount into. Refused before any
+  // global Dolphin state is touched, so a later boot in this same process still works.
+  const auto no_hardware = PowerPC::GcnPort::BootAuthenticatedImage(
+      system, identity, program, PROGRAM_ADDRESS, PROGRAM_ADDRESS,
+      PowerPC::GcnPort::GameCubeBootOptions{.apply_os_init = true,
+                                            .disc_image_path = "/nonexistent.iso"});
+  EXPECT_FALSE(no_hardware.ok);
+  EXPECT_NE(no_hardware.detail.find("apply_hardware_init"), std::string::npos) << no_hardware.detail;
+
+  // A path that is not a readable disc image is a failed boot, not a boot with no disc: the caller
+  // named a disc and did not get one.
+  const std::string missing = profile_path + "/not-a-disc.iso";
+  const auto unreadable = PowerPC::GcnPort::BootAuthenticatedImage(
+      system, identity, program, PROGRAM_ADDRESS, PROGRAM_ADDRESS,
+      PowerPC::GcnPort::GameCubeBootOptions{
+          .apply_os_init = true, .apply_hardware_init = true, .disc_image_path = missing});
+  EXPECT_FALSE(unreadable.ok);
+  EXPECT_NE(unreadable.detail.find(missing), std::string::npos) << unreadable.detail;
+
+  // That failed boot must have handed back every global it took, or this ordinary boot cannot run.
+  const auto recovered = PowerPC::GcnPort::BootAuthenticatedImage(
+      system, identity, program, PROGRAM_ADDRESS, PROGRAM_ADDRESS,
+      PowerPC::GcnPort::GameCubeBootOptions{.apply_os_init = true});
+  ASSERT_TRUE(recovered.ok) << "a refused disc boot leaked global state: " << recovered.detail;
+
+  PowerPC::GcnPort::ShutdownBootedImage(system);
+  File::DeleteDirRecursively(profile_path);
+}
+
+TEST(GcnPortRuntime, DiscImageRefusalsNeverBootSilentlyWithoutTheDisc)
+{
+  std::thread cpu_thread(RunDiscRefusalScenario);
   cpu_thread.join();
 }
 
@@ -753,13 +807,13 @@ TEST(GcnPortRuntime, ClassifyFallbackReasonMatchesStaticOpcodeTables)
   EXPECT_EQ(ClassifyFallbackReason(ADDI_R3_R3_1), JitRefusalReason::UnsupportedInstruction);
 }
 
-// Proves BootAuthenticatedImage's apply_gamecube_hardware_init flag actually builds a working
+// Proves BootAuthenticatedImage's apply_hardware_init option actually builds a working
 // MMIO::Mapping handler table (HW::Init -> MemoryManager::InitMMIO), using a small synthetic program
 // that stores to, then reads back, the real GameCube ProcessorInterface hardware register at
 // physical/effective address 0x0C003004 (PI_INTERRUPT_MASK; see ProcessorInterface.cpp's
 // RegisterMMIO) -- the exact register and address a real GMSE01 boot's own __init_hardware code
 // faulted on before this flag existed (docs/dolphin-embedding-contract.md). Boots in real
-// addressing mode (apply_gamecube_os_init left at its default false) so the effective address the
+// addressing mode (apply_os_init left at its default false) so the effective address the
 // program uses is also the physical address the MMIO table is registered under, independent of the
 // BAT setup this file already covers in the os-init tests above.
 void RunHardwareInitMmioScenario()
@@ -786,7 +840,7 @@ void RunHardwareInitMmioScenario()
   Core::System& system = Core::System::GetInstance();
   const auto booted = PowerPC::GcnPort::BootAuthenticatedImage(
       system, identity, program, PROGRAM_ADDRESS, PROGRAM_ADDRESS,
-      /*apply_gamecube_os_init=*/false, /*apply_gamecube_hardware_init=*/true);
+      PowerPC::GcnPort::GameCubeBootOptions{.apply_hardware_init = true});
   ASSERT_TRUE(booted.ok) << booted.detail;
 
   PowerPC::GcnPort::RuntimeSession runtime(system, identity);
@@ -808,7 +862,7 @@ TEST(GcnPortRuntime, BootAuthenticatedImageAppliesGameCubeHardwareInitMmio)
   cpu_thread.join();
 }
 
-// Negative control for the test above: without apply_gamecube_hardware_init (its default, false),
+// Negative control for the test above: without apply_hardware_init (its default, false),
 // the exact same hardware-register store must NOT silently succeed or no-op. It must reach the same
 // real fault this issue diagnosed booting exact GMSE01 -- a SIGSEGV inside
 // MMIO::WriteHandler<u32>::Write (Source/Core/Core/HW/MMIO.cpp) through an uninitialized handler

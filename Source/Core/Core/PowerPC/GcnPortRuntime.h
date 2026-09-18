@@ -180,58 +180,77 @@ struct BootResult
 // The process may boot at most one image at a time; a second call before ShutdownBootedImage
 // returns a failed BootResult instead of silently reinitializing global Dolphin state.
 //
-// `apply_gamecube_os_init` selects the exact, title-neutral GameCube MSR/HID/BAT register setup
-// every retail title's real BS2/IPL establishes before jumping to a disc's DOL entry point (see
-// CBoot::SetupGameCubeBS2Registers, which reuses CBoot::EmulatedBS2_GC's own SetupMSR/SetupHID/
-// SetupBAT). It defaults to false so an existing caller booting a small synthetic PPC test program
-// that does not rely on effective-address translation is unaffected. A real GameCube DOL's own
-// code assumes this configuration is already in place: with MSR.DR/IR left at their power-on-reset
-// value of 0 (real mode), PowerPC treats an ordinary effective address like 0x80xxxxxx as a
-// physical address, landing far outside the console's 24 MiB of RAM instead of translating back
-// down into it, so a raw DOL boot without this flag reliably faults on its first EA-dependent
-// access.
-//
-// `apply_gamecube_hardware_init` selects Dolphin's own maintained `HW::Init`/`HW::Shutdown`
-// (Source/Core/Core/HW/HW.cpp) in place of this function's own minimal Memory/CoreTiming/CPU
-// bring-up. `HW::Init` is what actually builds the `MMIO::Mapping` handler table (via
-// `MemoryManager::InitMMIO`, called at the end of `HW::Init`): every GameCube hardware register a
-// title's own `__init_hardware`-equivalent code touches (VideoInterface, ProcessorInterface,
-// SerialInterface, ExpansionInterface, AudioInterface, MemoryInterface, DSP, DVDInterface,
-// CommandProcessor, PixelEngine) is otherwise left with no registered read/write handler, so a real
-// title's ordinary hardware bring-up store or load into that physical range (e.g. GameCube
-// `ProcessorInterface` at physical 0x0C003000) calls through an uninitialized function pointer and
-// crashes; this is not a JIT bug, it is a missing hardware owner. It defaults to false so an
-// existing caller booting a small synthetic PPC test program that never touches hardware registers
-// is unaffected (`HW::Init` runs `system.GetMemory().Init()` again internally, so calling it after
-// this function's own Memory::Init would double-initialize and, worse, wipe an already-copied
-// image; when this flag is true the function calls `HW::Init` INSTEAD of its own Memory/
-// CoreTiming/CPU calls, exactly once, before the image copy, matching Dolphin's own EmuThread
-// order).
-//
-// `HW::Init` on its own does not construct a host video backend, select DSP HLE/LLE threading, or
-// open any real input device: those live in separate calls Dolphin's own `EmuThread` makes AROUND
-// `HW::Init` (`g_video_backend->Initialize`, `DSPEmulator::Initialize`), none of which this function
-// or `gcnport` calls — matching this project's scope of owning execution, not rendering/audio/input
-// (see docs/dolphin-embedding-contract.md). `AudioInterfaceManager::Init` (one of `HW::Init`'s own
-// device owners) unconditionally dereferences `system.GetSoundStream()`, so a `SoundStream` object
-// must already exist; this function calls `AudioCommon::InitSoundStream` itself for exactly that
-// reason, with the selected backend forced to Dolphin's own maintained "No Audio Output" (NullSound)
-// backend below, so this never opens a real host audio device. Two more of `HW::Init`'s device owners
-// have host side effects
-// that do not belong to a bare adapter boot with no configured title/user directory, so this flag
-// also forces safe, title-neutral defaults through Config before calling `HW::Init`: every
-// SerialInterface channel is forced to `SIDEVICE_NONE` (the default GameCube controller device
-// polls `Pad::GetStatus`, which indexes a `ControllerInterface` this function never initializes) and
-// both EXI memory card slots are forced to `EXIDeviceType::None` (the default `MemoryCardFolder`
-// device touches host disk under a per-title save path this function has no way to derive from a
-// raw image boot). Both are ordinary, real hardware states — no controller plugged in, no memory
-// card inserted — not a fabricated shortcut; a title consumer that wants persistent input/storage
-// devices attaches them itself afterward through the same Config surface gcnport does not own.
+// What a raw-image boot sets up around the image before it runs. Each field is independent, and a
+// default-constructed value reproduces the original behaviour of booting nothing but the image.
+struct GameCubeBootOptions
+{
+  // `apply_gamecube_os_init` selects the exact, title-neutral GameCube MSR/HID/BAT register setup
+  // every retail title's real BS2/IPL establishes before jumping to a disc's DOL entry point (see
+  // CBoot::SetupGameCubeBS2Registers, which reuses CBoot::EmulatedBS2_GC's own SetupMSR/SetupHID/
+  // SetupBAT). It defaults to false so an existing caller booting a small synthetic PPC test program
+  // that does not rely on effective-address translation is unaffected. A real GameCube DOL's own
+  // code assumes this configuration is already in place: with MSR.DR/IR left at their power-on-reset
+  // value of 0 (real mode), PowerPC treats an ordinary effective address like 0x80xxxxxx as a
+  // physical address, landing far outside the console's 24 MiB of RAM instead of translating back
+  // down into it, so a raw DOL boot without this flag reliably faults on its first EA-dependent
+  // access.
+  //
+  bool apply_os_init = false;
+
+  // `apply_gamecube_hardware_init` selects Dolphin's own maintained `HW::Init`/`HW::Shutdown`
+  // (Source/Core/Core/HW/HW.cpp) in place of this function's own minimal Memory/CoreTiming/CPU
+  // bring-up. `HW::Init` is what actually builds the `MMIO::Mapping` handler table (via
+  // `MemoryManager::InitMMIO`, called at the end of `HW::Init`): every GameCube hardware register a
+  // title's own `__init_hardware`-equivalent code touches (VideoInterface, ProcessorInterface,
+  // SerialInterface, ExpansionInterface, AudioInterface, MemoryInterface, DSP, DVDInterface,
+  // CommandProcessor, PixelEngine) is otherwise left with no registered read/write handler, so a real
+  // title's ordinary hardware bring-up store or load into that physical range (e.g. GameCube
+  // `ProcessorInterface` at physical 0x0C003000) calls through an uninitialized function pointer and
+  // crashes; this is not a JIT bug, it is a missing hardware owner. It defaults to false so an
+  // existing caller booting a small synthetic PPC test program that never touches hardware registers
+  // is unaffected (`HW::Init` runs `system.GetMemory().Init()` again internally, so calling it after
+  // this function's own Memory::Init would double-initialize and, worse, wipe an already-copied
+  // image; when this flag is true the function calls `HW::Init` INSTEAD of its own Memory/
+  // CoreTiming/CPU calls, exactly once, before the image copy, matching Dolphin's own EmuThread
+  // order).
+  //
+  // `HW::Init` on its own does not construct a host video backend, select DSP HLE/LLE threading, or
+  // open any real input device: those live in separate calls Dolphin's own `EmuThread` makes AROUND
+  // `HW::Init` (`g_video_backend->Initialize`, `DSPEmulator::Initialize`), none of which this function
+  // or `gcnport` calls — matching this project's scope of owning execution, not rendering/audio/input
+  // (see docs/dolphin-embedding-contract.md). `AudioInterfaceManager::Init` (one of `HW::Init`'s own
+  // device owners) unconditionally dereferences `system.GetSoundStream()`, so a `SoundStream` object
+  // must already exist; this function calls `AudioCommon::InitSoundStream` itself for exactly that
+  // reason, with the selected backend forced to Dolphin's own maintained "No Audio Output" (NullSound)
+  // backend below, so this never opens a real host audio device. Two more of `HW::Init`'s device owners
+  // have host side effects
+  // that do not belong to a bare adapter boot with no configured title/user directory, so this flag
+  // also forces safe, title-neutral defaults through Config before calling `HW::Init`: every
+  // SerialInterface channel is forced to `SIDEVICE_NONE` (the default GameCube controller device
+  // polls `Pad::GetStatus`, which indexes a `ControllerInterface` this function never initializes) and
+  // both EXI memory card slots are forced to `EXIDeviceType::None` (the default `MemoryCardFolder`
+  // device touches host disk under a per-title save path this function has no way to derive from a
+  // raw image boot). Both are ordinary, real hardware states — no controller plugged in, no memory
+  // card inserted — not a fabricated shortcut; a title consumer that wants persistent input/storage
+  // devices attaches them itself afterward through the same Config surface gcnport does not own.
+  bool apply_hardware_init = false;
+
+  // Filesystem path to the title's own disc image, so guest DVD commands read real data instead of
+  // failing the way they do on a drive with no disc inserted. Empty mounts no disc, which is the
+  // default and is itself an ordinary hardware state rather than an error.
+  //
+  // Only this consumer-supplied path crosses the boundary: gcnport never ships, embeds, or links a
+  // game image, and never reads one except through a path its caller chose. Requires
+  // apply_hardware_init, because DVDInterface and the DVD thread are among HW::Init's device owners;
+  // asking for a disc without it is refused rather than silently ignored.
+  std::string disc_image_path;
+};
+
 [[nodiscard]] BootResult BootAuthenticatedImage(Core::System& system,
                                                  const ExecutionIdentity& identity,
                                                  std::span<const u8> image, u32 load_address,
-                                                 u32 entry_point, bool apply_gamecube_os_init = false,
-                                                 bool apply_gamecube_hardware_init = false);
+                                                 u32 entry_point,
+                                                 const GameCubeBootOptions& options = {});
 
 // Reverses BootAuthenticatedImage. Must be called before the process may boot another image.
 void ShutdownBootedImage(Core::System& system) noexcept;

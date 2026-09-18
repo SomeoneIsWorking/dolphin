@@ -180,11 +180,16 @@ public:
   // the default rfi exception handlers. Like the register setup, this carries no per-title state.
   static void SetupGCMemory(Core::System& system, const Core::CPUThreadGuard& guard);
 
+  // Exposes the disc-header read CBoot::EmulatedBS2_GC performs before handing control to a title,
+  // for the same raw-image caller as the two above. It copies the disc's first 0x20 bytes to the
+  // given address and moves the drive out of its DiscIdNotRead state, which is what lets the title's
+  // own subsequent reads succeed. The caller supplies the volume, so no game image is named here.
+  static bool DVDReadDiscID(Core::System& system, const DiscIO::VolumeDisc& disc,
+                            u32 output_address);
+
 private:
   static bool DVDRead(Core::System& system, const DiscIO::VolumeDisc& disc, u64 dvd_offset,
                       u32 output_address, u32 length, const DiscIO::Partition& partition);
-  static bool DVDReadDiscID(Core::System& system, const DiscIO::VolumeDisc& disc,
-                            u32 output_address);
   static void RunFunction(Core::System& system, u32 address);
 
   static bool Boot_WiiWAD(Core::System& system, const DiscIO::VolumeWAD& wad);
