@@ -27,6 +27,8 @@
 #include "Core/PowerPC/JitCommon/JitBase.h"
 #include "Core/PowerPC/JitInterface.h"
 #include "Core/PowerPC/PowerPC.h"
+#include "DiscIO/Volume.h"
+#include "Core/HW/DVD/DVDInterface.h"
 #include "Core/System.h"
 #include "InputCommon/ControllerInterface/ControllerInterface.h"
 
@@ -189,9 +191,38 @@ HookResult HookResult::RunOriginalOnce()
   return {.action = HookAction::RunOriginalOnce};
 }
 
+// Reverses everything BootAuthenticatedImage brought up, for a boot that fails after bring-up but
+// before it publishes itself as booted. ShutdownBootedImage cannot serve here: it keys off
+// g_image_booted, which a failed boot never sets, so calling it would silently do nothing and leave
+// HW::Init's device owners and CoreTiming's event registry live -- which the NEXT boot then hits as
+// "CoreTiming Event is already registered", far from the boot that actually leaked it.
+void TearDownIncompleteBringUp(Core::System& system, bool hardware_initialized)
+{
+  if (hardware_initialized)
+  {
+    if (g_exception_handler_installed)
+    {
+      EMM::UninstallExceptionHandler();
+      g_exception_handler_installed = false;
+    }
+    HW::Shutdown(system);
+    AudioCommon::ShutdownSoundStream(system);
+    g_controller_interface.Shutdown();
+  }
+  else
+  {
+    system.GetCPU().Shutdown();
+    system.GetCoreTiming().Shutdown();
+    system.GetMemory().Shutdown();
+  }
+  SConfig::Shutdown();
+  Config::Shutdown();
+  Core::UndeclareAsCPUThread();
+}
+
 BootResult BootAuthenticatedImage(Core::System& system, const ExecutionIdentity& identity,
                                    std::span<const u8> image, u32 load_address, u32 entry_point,
-                                   bool apply_gamecube_os_init, bool apply_gamecube_hardware_init)
+                                   const GameCubeBootOptions& options)
 {
   if (!identity.image.IsAuthenticated())
     return {.ok = false, .detail = "image identity is not authenticated"};
@@ -203,6 +234,14 @@ BootResult BootAuthenticatedImage(Core::System& system, const ExecutionIdentity&
     return {.ok = false, .detail = "load address or entry point is not instruction-aligned"};
   if (entry_point < load_address || entry_point - load_address >= image.size())
     return {.ok = false, .detail = "entry point is outside the loaded image"};
+  // DVDInterface and the DVD thread are among HW::Init's device owners, so there is nothing to mount
+  // a disc into without it. Refuse here, before any global Dolphin state is touched, rather than
+  // booting successfully with the disc silently absent.
+  if (!options.disc_image_path.empty() && !options.apply_hardware_init)
+  {
+    return {.ok = false,
+            .detail = "a disc image requires apply_hardware_init, which owns DVDInterface"};
+  }
 
   Core::DeclareAsCPUThread();
   Config::Init();
@@ -229,7 +268,7 @@ BootResult BootAuthenticatedImage(Core::System& system, const ExecutionIdentity&
   // the same handler itself once real hardware registers are reachable, or an ordinary fastmem-
   // optimized access to one crashes the process outright instead of reaching the registered MMIO
   // handler.
-  if (apply_gamecube_hardware_init)
+  if (options.apply_hardware_init)
   {
     ForceNoHostBackedGameCubeDevices();
     AudioCommon::InitSoundStream(system);
@@ -280,32 +319,13 @@ BootResult BootAuthenticatedImage(Core::System& system, const ExecutionIdentity&
   if (load_address < EFFECTIVE_RAM_BASE ||
       static_cast<u64>(load_address - EFFECTIVE_RAM_BASE) + image.size() > ram_size)
   {
-    if (apply_gamecube_hardware_init)
-    {
-      if (g_exception_handler_installed)
-      {
-        EMM::UninstallExceptionHandler();
-        g_exception_handler_installed = false;
-      }
-      HW::Shutdown(system);
-      AudioCommon::ShutdownSoundStream(system);
-      g_controller_interface.Shutdown();
-    }
-    else
-    {
-      system.GetCPU().Shutdown();
-      system.GetCoreTiming().Shutdown();
-      system.GetMemory().Shutdown();
-    }
-    SConfig::Shutdown();
-    Config::Shutdown();
-    Core::UndeclareAsCPUThread();
+    TearDownIncompleteBringUp(system, options.apply_hardware_init);
     return {.ok = false, .detail = "image does not fit inside mapped GameCube RAM"};
   }
 
   system.GetMemory().CopyToEmu(load_address, image.data(), image.size());
 
-  if (apply_gamecube_os_init)
+  if (options.apply_os_init)
   {
     CBoot::SetupGameCubeBS2Registers(system);
 
@@ -322,12 +342,36 @@ BootResult BootAuthenticatedImage(Core::System& system, const ExecutionIdentity&
     CBoot::SetupGCMemory(system, guard);
   }
 
+  if (!options.disc_image_path.empty())
+  {
+    std::unique_ptr<DiscIO::VolumeDisc> disc = DiscIO::CreateDisc(options.disc_image_path);
+    if (!disc)
+    {
+      TearDownIncompleteBringUp(system, options.apply_hardware_init);
+      return {.ok = false, .detail = "could not open a GameCube/Wii disc image at " +
+                                     options.disc_image_path};
+    }
+
+    // What BS2 does with a disc before handing control to the title, in the order EmulatedBS2_GC
+    // does it: read the 0x20-byte disc header to physical 0, which is also what moves the drive out
+    // of its DiscIdNotRead state, then leave the volume mounted for the title's own reads. Without
+    // the header a title cannot identify the disc it is running from; without the mount its first
+    // real read fails and the SDK falls into its disc-error screen.
+    if (!CBoot::DVDReadDiscID(system, *disc, 0x00000000))
+    {
+      TearDownIncompleteBringUp(system, options.apply_hardware_init);
+      return {.ok = false,
+              .detail = "could not read the disc header from " + options.disc_image_path};
+    }
+    system.GetDVDInterface().SetDisc(std::move(disc), {});
+  }
+
   auto& state = system.GetPPCState();
   state.pc = entry_point;
   state.npc = entry_point;
 
   g_image_booted = true;
-  g_hardware_initialized = apply_gamecube_hardware_init;
+  g_hardware_initialized = options.apply_hardware_init;
   return {.ok = true, .detail = ""};
 }
 
