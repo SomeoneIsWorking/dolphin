@@ -5,11 +5,14 @@
 
 #include <algorithm>
 #include <exception>
+#include <memory>
 #include <string_view>
 
 #include "AudioCommon/AudioCommon.h"
 #include "Common/Config/Config.h"
+#include "Common/Config/Layer.h"
 #include "Common/Logging/Log.h"
+#include "Common/Logging/LogManager.h"
 #include "Core/Boot/Boot.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/ConfigManager.h"
@@ -41,6 +44,24 @@ namespace PowerPC::GcnPort
 {
 namespace
 {
+// Config::AddLayer builds a layer from a loader, so an empty Base layer needs a loader that reads
+// and writes nothing. Config::Init() creates only the CurrentRun layer, and several Core owners
+// write through Base -- Common::Log::LogManager's constructor does -- where Config::Layer::Set
+// dereferences a null layer if none exists.
+//
+// This is deliberately not ConfigLoaders::GenerateBaseConfigLoader(), which is a frontend's: it
+// reads and writes the user's Dolphin.ini, so an embedded boot's behaviour would depend on whatever
+// that person last set in Dolphin, which is exactly what a deterministic adapter must not do.
+// Forced runtime selections in this file stay on Config::SetCurrent, which outranks Base either
+// way; Base exists here only so that writes have somewhere to land.
+class EmptyBaseConfigLoader final : public Config::ConfigLayerLoader
+{
+public:
+  EmptyBaseConfigLoader() : ConfigLayerLoader(Config::LayerType::Base) {}
+  void Load(Config::Layer*) override {}
+  void Save(Config::Layer*) override {}
+};
+
 void Require(bool condition, std::string_view reason) noexcept
 {
   if (!condition)
@@ -230,10 +251,9 @@ HookResult HookResult::RunOriginalOnce()
 // as Core.cpp does when IsDualCoreMode() is false.
 bool InitializeMediaDevices(Core::System& system)
 {
-  // SetCurrent, not SetBaseOrCurrent: Config::Init() creates only the CurrentRun layer, and the
-  // Base layer a frontend would add through UICommon::Init()/GenerateBaseConfigLoader does not exist
-  // in this embedding, so SetBaseOrCurrent dereferences a null layer. This matches how
-  // ForceNoHostBackedGameCubeDevices above pins its own device selections.
+  // SetCurrent, matching how ForceNoHostBackedGameCubeDevices above pins its own device selections:
+  // this is a selection this boot forces for its own lifetime, not a default to persist into the
+  // consumer's configuration, and CurrentRun outranks the Base layer.
   Config::SetCurrent(Config::MAIN_GFX_BACKEND, std::string("Null"));
 
   const WindowSystemInfo headless_wsi{};
@@ -297,6 +317,7 @@ void TearDownIncompleteBringUp(Core::System& system, bool hardware_initialized)
     system.GetCoreTiming().Shutdown();
     system.GetMemory().Shutdown();
   }
+  Common::Log::LogManager::Shutdown();
   SConfig::Shutdown();
   Config::Shutdown();
   Core::UndeclareAsCPUThread();
@@ -345,7 +366,17 @@ BootResult BootAuthenticatedImage(Core::System& system, const ExecutionIdentity&
 
   Core::DeclareAsCPUThread();
   Config::Init();
+  Config::AddLayer(std::make_unique<EmptyBaseConfigLoader>());
   SConfig::Init();
+
+  // Dolphin's subsystems reach the log manager through a raw singleton pointer and do not check it.
+  // FileMonitor::FileLogger::Log, which DVDThread::ProcessReadRequest calls on every disc FILE read,
+  // dereferences it unconditionally -- measured as a SIGSEGV on the DVD thread with
+  // LogManager::IsEnabled's `this` at null, the first time a boot read a file rather than the raw
+  // disc header. UICommon::Init is where a frontend brings this up, after Config and SConfig, and
+  // this embedding does not call that. Bring up the one piece of it Core requires, in the same
+  // order, rather than the whole frontend, whose config layers this file deliberately does not want.
+  Common::Log::LogManager::Init();
 
   // HW::Init() performs its own system.GetMemory().Init() internally (it must: MemoryManager::
   // InitMMIO(), which builds the MMIO::Mapping handler table, depends on the rest of HW::Init()'s
@@ -536,6 +567,7 @@ void ShutdownBootedImage(Core::System& system) noexcept
     system.GetCoreTiming().Shutdown();
     system.GetMemory().Shutdown();
   }
+  Common::Log::LogManager::Shutdown();
   SConfig::Shutdown();
   Config::Shutdown();
   Core::UndeclareAsCPUThread();
