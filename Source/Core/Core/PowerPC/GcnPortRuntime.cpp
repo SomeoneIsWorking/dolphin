@@ -28,6 +28,7 @@
 #include "Core/PowerPC/JitInterface.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/System.h"
+#include "InputCommon/ControllerInterface/ControllerInterface.h"
 
 namespace PowerPC::GcnPort
 {
@@ -68,6 +69,18 @@ bool g_image_booted = false;
 // with this function's own minimal bring-up, or shutdown either double-frees state HW::Init never
 // touched or leaves HW::Init's device owners (DVD thread, ARAM allocation, EXI channels) alive.
 bool g_hardware_initialized = false;
+
+// A no-op CoreTiming event, kept permanently one cycle in the future, whose only purpose is to cap
+// the length of every slice so Dolphin's generated dispatcher hands control back after a single
+// block (see the comment at its registration in BootAuthenticatedImage). File scope because
+// CoreTiming::TimedCallback is a plain function pointer, so the callback that reschedules it cannot
+// capture. CoreTiming::Init() clears the event registry, so this is registered per boot.
+CoreTiming::EventType* g_block_bound_event = nullptr;
+
+void RescheduleBlockBound(Core::System& system, u64, s64)
+{
+  system.GetCoreTiming().ScheduleEvent(1, g_block_bound_event);
+}
 
 // Whether this process's SIGSEGV/SIGBUS fastmem handler is currently installed. Tracked separately
 // from g_hardware_initialized because EMM::IsExceptionHandlerSupported() can be false on a host
@@ -190,6 +203,19 @@ BootResult BootAuthenticatedImage(Core::System& system, const ExecutionIdentity&
   {
     ForceNoHostBackedGameCubeDevices();
     AudioCommon::InitSoundStream(system);
+
+    // SerialInterfaceManager's periodic poll calls g_controller_interface.UpdateInput()
+    // unconditionally -- before, and independently of, asking any SI channel for data -- and that
+    // call asserts on m_is_init. Forcing every channel to SIDEVICE_NONE above is therefore not
+    // sufficient: the poll still runs, because an SI poll with nothing plugged in is exactly what
+    // real hardware does. Bring the interface up in its headless form so that poll has a real,
+    // initialized owner. WindowSystemInfo defaults to WindowSystemType::Headless and every host
+    // input backend is compile-time gated (CIFACE_USE_*), so this constructs the "no input devices
+    // present" state rather than opening a host device -- the same shape as the NullSound and
+    // no-memory-card states forced above. A title consumer that owns real input attaches its own
+    // devices through this same interface afterward.
+    g_controller_interface.Initialize(WindowSystemInfo{});
+
     HW::Init(system, nullptr);
     if (EMM::IsExceptionHandlerSupported())
     {
@@ -204,6 +230,22 @@ BootResult BootAuthenticatedImage(Core::System& system, const ExecutionIdentity&
     system.GetCPU().Init(PowerPC::DefaultCPUCore());
   }
 
+  // ExecuteJitBlock's contract is "run exactly one observable JIT block, then return". Dolphin's
+  // generated dispatcher only returns to its caller at a slice boundary (its `do_timing` path, taken
+  // when the CPU state is not Running), so bounding a call to one block means bounding the SLICE to
+  // one block. CoreTiming already sizes every slice to end exactly at the next scheduled event
+  // (CoreTimingManager::Advance: `slice_length = min(next_event.time - global_timer, ...)`), so an
+  // event kept permanently one cycle ahead keeps every slice minimal.
+  //
+  // Bounding this way is what lets ExecuteJitBlock leave `ppc_state.downcount` alone, which is
+  // required for correct timekeeping -- see the long comment there. MAIN_ENABLE_DEBUGGING would also
+  // produce a per-block dispatcher exit, but it is the wrong tool: it additionally drives the block
+  // analyzer into single-instruction blocks (JitBase::RefreshConfig ->
+  // analyzer.SetDebuggingEnabled), destroying exactly the block-level granularity this API exposes.
+  auto& core_timing = system.GetCoreTiming();
+  g_block_bound_event = core_timing.RegisterEvent("GcnPortBlockBound", RescheduleBlockBound);
+  core_timing.ScheduleEvent(1, g_block_bound_event);
+
   const u32 ram_size = system.GetMemory().GetRamSizeReal();
   if (load_address < EFFECTIVE_RAM_BASE ||
       static_cast<u64>(load_address - EFFECTIVE_RAM_BASE) + image.size() > ram_size)
@@ -217,6 +259,7 @@ BootResult BootAuthenticatedImage(Core::System& system, const ExecutionIdentity&
       }
       HW::Shutdown(system);
       AudioCommon::ShutdownSoundStream(system);
+      g_controller_interface.Shutdown();
     }
     else
     {
@@ -257,6 +300,7 @@ void ShutdownBootedImage(Core::System& system) noexcept
     }
     HW::Shutdown(system);
     AudioCommon::ShutdownSoundStream(system);
+    g_controller_interface.Shutdown();
   }
   else
   {
@@ -343,10 +387,24 @@ JitBlockOutcome RuntimeSession::ExecuteJitBlock()
   const u64 compiled_before = m_counters.jit_blocks_compiled;
   const u64 fallback_before = m_counters.fallback_events;
 
-  // A downcount of 1 guarantees the generated dispatcher returns to this call after completing
-  // exactly the first block: every executed block decrements downcount by at least its estimated
-  // cycle cost before the dispatcher rechecks it, so it cannot chain a second direct-linked block.
-  state.downcount = 1;
+  // Deliberately does NOT write ppc_state.downcount. CoreTiming::Advance() -- which Dolphin's own
+  // generated dispatcher calls on entry -- derives elapsed guest time from exactly that leftover:
+  //
+  //     cyclesExecuted = slice_length - DowncountToCycles(downcount)
+  //
+  // so on entry `downcount` must still be the natural remainder of the previous slice (normally
+  // negative: the amount by which the last block overran it). Overwriting it with a sentinel makes
+  // Advance() attribute the wrong cycle count to the slice that just ran. Writing 1 while
+  // slice_length was also 1 -- the steady state a one-block-at-a-time caller settles into -- yielded
+  // 1 - 1 == 0 and froze the global timer permanently, so no scheduled CoreTiming event could ever
+  // come due and no hardware completion interrupt was ever raised. Measured against exact GMSE01:
+  // the timer stuck at 30,891 ticks across 16,384 consecutive dispatches while the title spun
+  // forever inside __OSInitAudioSystem waiting on the ARAM DMA completion interrupt (INT_ARAM,
+  // DSP_CONTROL bit 0x20) that DSPManager::Do_ARAM_DMA had scheduled just 246 ticks ahead.
+  //
+  // The sentinel never bounded anything either: Advance() reassigns downcount from the event queue
+  // before the first block runs. One block per call comes from the one-cycle slice cap installed in
+  // BootAuthenticatedImage.
   m_system.GetPowerPC().SingleStep();
 
   JitBlockOutcome outcome;
