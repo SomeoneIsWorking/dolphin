@@ -525,4 +525,101 @@ TEST(GcnPortRuntime, ClassifyFallbackReasonMatchesStaticOpcodeTables)
   // addi r3,r3,1: opcode 14, not an opcode-31 fallback at all; must not be misclassified.
   EXPECT_EQ(ClassifyFallbackReason(ADDI_R3_R3_1), JitRefusalReason::UnsupportedInstruction);
 }
+
+// Proves BootAuthenticatedImage's apply_gamecube_hardware_init flag actually builds a working
+// MMIO::Mapping handler table (HW::Init -> MemoryManager::InitMMIO), using a small synthetic program
+// that stores to, then reads back, the real GameCube ProcessorInterface hardware register at
+// physical/effective address 0x0C003004 (PI_INTERRUPT_MASK; see ProcessorInterface.cpp's
+// RegisterMMIO) -- the exact register and address a real GMSE01 boot's own __init_hardware code
+// faulted on before this flag existed (docs/dolphin-embedding-contract.md). Boots in real
+// addressing mode (apply_gamecube_os_init left at its default false) so the effective address the
+// program uses is also the physical address the MMIO table is registered under, independent of the
+// BAT setup this file already covers in the os-init tests above.
+void RunHardwareInitMmioScenario()
+{
+  const std::string profile_path = File::CreateTempDir();
+  if (profile_path.empty())
+  {
+    ADD_FAILURE() << "failed to create an isolated Dolphin user directory";
+    return;
+  }
+
+  constexpr u32 PROGRAM_ADDRESS = 0x80009000;
+  constexpr u32 LIS_R3_PI_BASE = 0x3C600C00;             // lis r3, 0x0C00
+  constexpr u32 ADDI_R3_R3_PI_MASK_OFFSET = 0x38633004;  // addi r3, r3, 0x3004 (PI_INTERRUPT_MASK)
+  constexpr u32 LIS_R4_TEST_VALUE_HI = 0x3C801234;       // lis r4, 0x1234
+  constexpr u32 ORI_R4_R4_TEST_VALUE_LO = 0x60845678;    // ori r4, r4, 0x5678
+  constexpr u32 STW_R4_0_R3 = 0x90830000;                // stw r4, 0(r3)
+  constexpr u32 LWZ_R5_0_R3 = 0x80A30000;                // lwz r5, 0(r3)
+  const std::vector<u8> program =
+      BigEndianImage({LIS_R3_PI_BASE, ADDI_R3_R3_PI_MASK_OFFSET, LIS_R4_TEST_VALUE_HI,
+                       ORI_R4_R4_TEST_VALUE_LO, STW_R4_0_R3, LWZ_R5_0_R3, BRANCH_TO_SELF});
+  const auto identity = MakeIdentity(5);
+
+  Core::System& system = Core::System::GetInstance();
+  const auto booted = PowerPC::GcnPort::BootAuthenticatedImage(
+      system, identity, program, PROGRAM_ADDRESS, PROGRAM_ADDRESS,
+      /*apply_gamecube_os_init=*/false, /*apply_gamecube_hardware_init=*/true);
+  ASSERT_TRUE(booted.ok) << booted.detail;
+
+  PowerPC::GcnPort::RuntimeSession runtime(system, identity);
+  const auto outcome = runtime.ExecuteJitBlock();
+  EXPECT_EQ(outcome.kind, PowerPC::GcnPort::JitBlockKind::Compiled);
+
+  // The read-back value proves the store landed in ProcessorInterfaceManager's own
+  // m_interrupt_mask (DirectRead/ComplexWrite<u32>) through a real registered MMIO handler, not
+  // silently discarded, corrupted, or serviced by an uninitialized handler.
+  EXPECT_EQ(system.GetPPCState().gpr[5], 0x12345678u);
+
+  PowerPC::GcnPort::ShutdownBootedImage(system);
+  File::DeleteDirRecursively(profile_path);
+}
+
+TEST(GcnPortRuntime, BootAuthenticatedImageAppliesGameCubeHardwareInitMmio)
+{
+  std::thread cpu_thread(RunHardwareInitMmioScenario);
+  cpu_thread.join();
+}
+
+// Negative control for the test above: without apply_gamecube_hardware_init (its default, false),
+// the exact same hardware-register store must NOT silently succeed or no-op. It must reach the same
+// real fault this issue diagnosed booting exact GMSE01 -- a SIGSEGV inside
+// MMIO::WriteHandler<u32>::Write (Source/Core/Core/HW/MMIO.cpp) through an uninitialized handler
+// function pointer, because without HW::Init/InitMMIO no MMIO::Mapping table exists at all.
+// Asserting that the unfixed path actually crashes (not just that the fixed path works) is the
+// falsifier that this change fixed a real fault instead of only exercising a happy path.
+void RunNoHardwareInitMmioFaultScenario()
+{
+  constexpr u32 PROGRAM_ADDRESS = 0x8000A000;
+  constexpr u32 LIS_R3_PI_BASE = 0x3C600C00;
+  constexpr u32 ADDI_R3_R3_PI_MASK_OFFSET = 0x38633004;
+  constexpr u32 LIS_R4_TEST_VALUE_HI = 0x3C801234;
+  constexpr u32 ORI_R4_R4_TEST_VALUE_LO = 0x60845678;
+  constexpr u32 STW_R4_0_R3 = 0x90830000;
+  const std::vector<u8> program =
+      BigEndianImage({LIS_R3_PI_BASE, ADDI_R3_R3_PI_MASK_OFFSET, LIS_R4_TEST_VALUE_HI,
+                       ORI_R4_R4_TEST_VALUE_LO, STW_R4_0_R3, BRANCH_TO_SELF});
+  const auto identity = MakeIdentity(6);
+
+  Core::System& system = Core::System::GetInstance();
+  const auto booted = PowerPC::GcnPort::BootAuthenticatedImage(system, identity, program,
+                                                                PROGRAM_ADDRESS, PROGRAM_ADDRESS);
+  ASSERT_TRUE(booted.ok) << booted.detail;
+
+  PowerPC::GcnPort::RuntimeSession runtime(system, identity);
+  // Deliberately unguarded: this must crash the process, proving the register write reaches an
+  // uninitialized MMIO handler rather than silently succeeding.
+  const auto outcome = runtime.ExecuteJitBlock();
+  (void)outcome;
+}
+
+TEST(GcnPortRuntime, BootAuthenticatedImageWithoutHardwareInitFaultsOnMmioAccess)
+{
+  EXPECT_DEATH(
+      {
+        std::thread cpu_thread(RunNoHardwareInitMmioFaultScenario);
+        cpu_thread.join();
+      },
+      "");
+}
 }  // namespace

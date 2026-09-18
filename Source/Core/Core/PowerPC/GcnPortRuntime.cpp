@@ -7,14 +7,21 @@
 #include <exception>
 #include <string_view>
 
+#include "AudioCommon/AudioCommon.h"
 #include "Common/Config/Config.h"
 #include "Common/Logging/Log.h"
 #include "Core/Boot/Boot.h"
+#include "Core/Config/MainSettings.h"
 #include "Core/ConfigManager.h"
 #include "Core/Core.h"
 #include "Core/CoreTiming.h"
 #include "Core/HW/CPU.h"
+#include "Core/HW/EXI/EXI_Device.h"
+#include "Core/HW/HW.h"
 #include "Core/HW/Memmap.h"
+#include "Core/HW/SI/SI.h"
+#include "Core/HW/SI/SI_Device.h"
+#include "Core/MemTools.h"
 #include "Core/PowerPC/Gekko.h"
 #include "Core/PowerPC/Interpreter/Interpreter.h"
 #include "Core/PowerPC/JitCommon/JitBase.h"
@@ -55,6 +62,42 @@ constexpr u32 EFFECTIVE_RAM_BASE = 0x80000000;
 // singletons, not owned per Core::System, so a second concurrent boot would silently reinitialize
 // state a live session still depends on.
 bool g_image_booted = false;
+
+// Tracks which shutdown sequence matches the boot that set g_image_booted: HW::Shutdown() must be
+// paired with HW::Init(), and the original minimal Memory/CoreTiming/CPU shutdown must be paired
+// with this function's own minimal bring-up, or shutdown either double-frees state HW::Init never
+// touched or leaves HW::Init's device owners (DVD thread, ARAM allocation, EXI channels) alive.
+bool g_hardware_initialized = false;
+
+// Whether this process's SIGSEGV/SIGBUS fastmem handler is currently installed. Tracked separately
+// from g_hardware_initialized because EMM::IsExceptionHandlerSupported() can be false on a host
+// without this backend, in which case nothing was actually installed and Shutdown must not try to
+// uninstall it.
+bool g_exception_handler_installed = false;
+
+// A bare in-memory-image boot has no configured title identity or user directory and does not own
+// input, persistent storage, or audio output (see docs/dolphin-embedding-contract.md). Force real,
+// title-neutral "no device attached" hardware states before HW::Init() attaches its Config-selected
+// defaults, so bringing up hardware registers never touches host disk (the default EXI slot A
+// device is a MemoryCardFolder that scans/creates a save directory for whatever the current game ID
+// happens to be), never indexes an uninitialized host ControllerInterface (the default SI channel 0
+// device is a live GameCube controller that polls Pad::GetStatus), and never opens a real host audio
+// device (AudioInterfaceManager::Init() unconditionally dereferences system.GetSoundStream(), so a
+// SoundStream must already exist; the config-selected default backend, e.g. Cubeb, would otherwise
+// open a real device). All three are ordinary real hardware/software states, not a fabricated
+// shortcut: a real console can boot with its controller unplugged and no memory card inserted, and
+// Dolphin's own maintained NullSound backend is exactly the "no audio output" state its UI already
+// exposes, not a gcnport-invented stub. A title consumer that wants persistent input/storage/audio
+// devices attaches them afterward through this same Config/SoundStream surface; gcnport does not own
+// that policy.
+void ForceNoHostBackedGameCubeDevices()
+{
+  for (int channel = 0; channel < SerialInterface::MAX_SI_CHANNELS; ++channel)
+    Config::SetCurrent(Config::GetInfoForSIDevice(channel), SerialInterface::SIDEVICE_NONE);
+  Config::SetCurrent(Config::MAIN_SLOT_A, ExpansionInterface::EXIDeviceType::None);
+  Config::SetCurrent(Config::MAIN_SLOT_B, ExpansionInterface::EXIDeviceType::None);
+  Config::SetCurrent(Config::MAIN_AUDIO_BACKEND, std::string(BACKEND_NULLSOUND));
+}
 }  // namespace
 
 JitRefusalReason ClassifyFallbackReason(u32 instruction_hex) noexcept
@@ -105,7 +148,7 @@ HookResult HookResult::RunOriginalOnce()
 
 BootResult BootAuthenticatedImage(Core::System& system, const ExecutionIdentity& identity,
                                    std::span<const u8> image, u32 load_address, u32 entry_point,
-                                   bool apply_gamecube_os_init)
+                                   bool apply_gamecube_os_init, bool apply_gamecube_hardware_init)
 {
   if (!identity.image.IsAuthenticated())
     return {.ok = false, .detail = "image identity is not authenticated"};
@@ -121,21 +164,72 @@ BootResult BootAuthenticatedImage(Core::System& system, const ExecutionIdentity&
   Core::DeclareAsCPUThread();
   Config::Init();
   SConfig::Init();
-  system.GetMemory().Init();
+
+  // HW::Init() performs its own system.GetMemory().Init() internally (it must: MemoryManager::
+  // InitMMIO(), which builds the MMIO::Mapping handler table, depends on the rest of HW::Init()'s
+  // device construction). Calling this function's own minimal Memory::Init() first as well would
+  // reallocate the physical memory arena a second time, leaking the first one; the two bring-up
+  // paths are therefore mutually exclusive, not additive.
+  //
+  // AudioInterfaceManager::Init() (called from inside HW::Init()) unconditionally dereferences
+  // system.GetSoundStream(), so a SoundStream object must already exist before HW::Init() runs.
+  // AudioCommon::InitSoundStream() is the only owner of that construction; ForceNoHostBackedGame-
+  // CubeDevices() already pinned the selected backend to NullSound so this never opens a real host
+  // audio device.
+  //
+  // A hardware register such as GameCube ProcessorInterface has no fastmem-backed page (only RAM/
+  // L1/fake-VMEM/EXRAM physical regions are mapped, see MemoryManager::Init's physical_regions
+  // table), so a JIT-generated fastmem load/store that targets one deliberately raises SIGSEGV to
+  // reach the safe MMU/MMIO path. Dolphin's own maintained CpuThread() installs the handler for
+  // exactly this reason (Core.cpp, "The JIT need to be able to intercept faults, both for fastmem
+  // and for the BLR optimization"); a bare adapter boot never runs that function, so it must install
+  // the same handler itself once real hardware registers are reachable, or an ordinary fastmem-
+  // optimized access to one crashes the process outright instead of reaching the registered MMIO
+  // handler.
+  if (apply_gamecube_hardware_init)
+  {
+    ForceNoHostBackedGameCubeDevices();
+    AudioCommon::InitSoundStream(system);
+    HW::Init(system, nullptr);
+    if (EMM::IsExceptionHandlerSupported())
+    {
+      EMM::InstallExceptionHandler();
+      g_exception_handler_installed = true;
+    }
+  }
+  else
+  {
+    system.GetMemory().Init();
+    system.GetCoreTiming().Init();
+    system.GetCPU().Init(PowerPC::DefaultCPUCore());
+  }
 
   const u32 ram_size = system.GetMemory().GetRamSizeReal();
   if (load_address < EFFECTIVE_RAM_BASE ||
       static_cast<u64>(load_address - EFFECTIVE_RAM_BASE) + image.size() > ram_size)
   {
-    system.GetMemory().Shutdown();
+    if (apply_gamecube_hardware_init)
+    {
+      if (g_exception_handler_installed)
+      {
+        EMM::UninstallExceptionHandler();
+        g_exception_handler_installed = false;
+      }
+      HW::Shutdown(system);
+      AudioCommon::ShutdownSoundStream(system);
+    }
+    else
+    {
+      system.GetCPU().Shutdown();
+      system.GetCoreTiming().Shutdown();
+      system.GetMemory().Shutdown();
+    }
     SConfig::Shutdown();
     Config::Shutdown();
     Core::UndeclareAsCPUThread();
     return {.ok = false, .detail = "image does not fit inside mapped GameCube RAM"};
   }
 
-  system.GetCoreTiming().Init();
-  system.GetCPU().Init(PowerPC::DefaultCPUCore());
   system.GetMemory().CopyToEmu(load_address, image.data(), image.size());
 
   if (apply_gamecube_os_init)
@@ -146,6 +240,7 @@ BootResult BootAuthenticatedImage(Core::System& system, const ExecutionIdentity&
   state.npc = entry_point;
 
   g_image_booted = true;
+  g_hardware_initialized = apply_gamecube_hardware_init;
   return {.ok = true, .detail = ""};
 }
 
@@ -153,13 +248,27 @@ void ShutdownBootedImage(Core::System& system) noexcept
 {
   if (!g_image_booted)
     return;
-  system.GetCPU().Shutdown();
-  system.GetCoreTiming().Shutdown();
-  system.GetMemory().Shutdown();
+  if (g_hardware_initialized)
+  {
+    if (g_exception_handler_installed)
+    {
+      EMM::UninstallExceptionHandler();
+      g_exception_handler_installed = false;
+    }
+    HW::Shutdown(system);
+    AudioCommon::ShutdownSoundStream(system);
+  }
+  else
+  {
+    system.GetCPU().Shutdown();
+    system.GetCoreTiming().Shutdown();
+    system.GetMemory().Shutdown();
+  }
   SConfig::Shutdown();
   Config::Shutdown();
   Core::UndeclareAsCPUThread();
   g_image_booted = false;
+  g_hardware_initialized = false;
 }
 
 RuntimeSession::RuntimeSession(Core::System& system, ExecutionIdentity identity)
