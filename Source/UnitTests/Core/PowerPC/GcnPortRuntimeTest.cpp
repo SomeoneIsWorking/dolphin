@@ -17,6 +17,7 @@
 #include "Core/PowerPC/GcnPortRuntime.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/System.h"
+#include "InputCommon/ControllerInterface/ControllerInterface.h"
 #include "UICommon/UICommon.h"
 
 namespace
@@ -382,6 +383,129 @@ void RunGameCubeOsInitDefaultOffScenario()
 TEST(GcnPortRuntime, BootAuthenticatedImageDefaultsToNoGameCubeOsInit)
 {
   std::thread cpu_thread(RunGameCubeOsInitDefaultOffScenario);
+  cpu_thread.join();
+}
+
+// Regression falsifier for a timekeeping defect that made every scheduled CoreTiming event
+// unreachable, and for the block-granularity contract that defect's first attempted fix broke.
+//
+// ExecuteJitBlock must run exactly one JIT BLOCK per call while leaving ppc_state.downcount alone.
+// CoreTiming::Advance() -- which Dolphin's generated dispatcher calls on entry -- derives elapsed
+// guest time as `slice_length - DowncountToCycles(downcount)`, so downcount on entry must still be
+// the previous slice's natural remainder. Writing a sentinel of 1 into it while slice_length was
+// also 1 (the steady state a one-block-at-a-time caller settles into) yielded 1 - 1 == 0 and froze
+// the global timer permanently: no scheduled event could come due, so no hardware completion
+// interrupt was ever raised and a title polling for one span forever. One block per call instead
+// comes from the one-cycle slice cap BootAuthenticatedImage installs.
+//
+// The three assertions below are each an independent discriminator:
+//   * ticks must strictly increase per dispatch          -- fails if downcount is overwritten;
+//   * a block must hold more than one instruction        -- fails under MAIN_ENABLE_DEBUGGING, which
+//                                                           also bounds per block but drives the
+//                                                           analyzer into single-instruction blocks;
+//   * r3 must advance by exactly one block's worth        -- fails if a call runs zero or several
+//                                                           blocks.
+void RunBlockBoundaryAndCoreTimingScenario()
+{
+  const std::string profile_path = File::CreateTempDir();
+  if (profile_path.empty())
+  {
+    ADD_FAILURE() << "failed to create an isolated Dolphin user directory";
+    return;
+  }
+
+  constexpr u32 PROGRAM_ADDRESS = 0x80009000;
+  // Three adds then an unconditional branch back to the first of them: one straight-line block of
+  // four instructions that repeats forever, so every dispatch after the first is a cache hit and
+  // each completed block is observable as exactly +3 in r3.
+  constexpr u32 BRANCH_BACK_THREE_INSTRUCTIONS = 0x4bfffff4;
+  constexpr u32 ADDS_PER_BLOCK = 3;
+  constexpr u32 INSTRUCTIONS_PER_BLOCK = 4;
+  const std::vector<u8> program = BigEndianImage(
+      {ADDI_R3_R3_1, ADDI_R3_R3_1, ADDI_R3_R3_1, BRANCH_BACK_THREE_INSTRUCTIONS});
+  const auto identity = MakeIdentity(5);
+
+  Core::System& system = Core::System::GetInstance();
+  const auto booted = PowerPC::GcnPort::BootAuthenticatedImage(
+      system, identity, program, PROGRAM_ADDRESS, PROGRAM_ADDRESS,
+      /*apply_gamecube_os_init=*/true);
+  ASSERT_TRUE(booted.ok) << booted.detail;
+
+  PowerPC::GcnPort::RuntimeSession runtime(system, identity);
+  auto& core_timing = system.GetCoreTiming();
+  auto& ppc_state = system.GetPPCState();
+  ppc_state.gpr[3] = 0;
+
+  constexpr u32 DISPATCHES = 16;
+  u64 previous_ticks = core_timing.GetTicks();
+  for (u32 dispatch = 0; dispatch < DISPATCHES; ++dispatch)
+  {
+    const u32 r3_before = ppc_state.gpr[3];
+    const auto outcome = runtime.ExecuteJitBlock();
+
+    EXPECT_EQ(outcome.instruction_count, INSTRUCTIONS_PER_BLOCK)
+        << "dispatch " << dispatch << " did not run one whole block";
+    EXPECT_EQ(ppc_state.gpr[3] - r3_before, ADDS_PER_BLOCK)
+        << "dispatch " << dispatch << " ran " << (ppc_state.gpr[3] - r3_before)
+        << " adds, i.e. not exactly one block";
+
+    const u64 ticks = core_timing.GetTicks();
+    EXPECT_GT(ticks, previous_ticks) << "the CoreTiming global timer did not advance across "
+                                        "dispatch "
+                                     << dispatch << "; scheduled events can never come due";
+    previous_ticks = ticks;
+  }
+
+  PowerPC::GcnPort::ShutdownBootedImage(system);
+  File::DeleteDirRecursively(profile_path);
+}
+
+TEST(GcnPortRuntime, ExecuteJitBlockAdvancesCoreTimingAndRunsExactlyOneBlock)
+{
+  std::thread cpu_thread(RunBlockBoundaryAndCoreTimingScenario);
+  cpu_thread.join();
+}
+
+// SerialInterfaceManager's periodic poll calls g_controller_interface.UpdateInput() unconditionally,
+// before and independently of asking any SI channel for data, and that call asserts on m_is_init.
+// Forcing every channel to SIDEVICE_NONE is therefore not sufficient -- the poll still runs, because
+// an SI poll with nothing plugged in is what real hardware does. A hardware-init boot must leave the
+// interface initialized in its headless, no-devices-present form, and must hand it back on shutdown
+// so a second boot in the same process starts from the same state.
+void RunHeadlessControllerInterfaceScenario()
+{
+  const std::string profile_path = File::CreateTempDir();
+  if (profile_path.empty())
+  {
+    ADD_FAILURE() << "failed to create an isolated Dolphin user directory";
+    return;
+  }
+
+  constexpr u32 PROGRAM_ADDRESS = 0x8000a000;
+  const std::vector<u8> program = BigEndianImage({BRANCH_TO_SELF});
+  const auto identity = MakeIdentity(6);
+
+  Core::System& system = Core::System::GetInstance();
+  const auto booted = PowerPC::GcnPort::BootAuthenticatedImage(
+      system, identity, program, PROGRAM_ADDRESS, PROGRAM_ADDRESS,
+      /*apply_gamecube_os_init=*/true, /*apply_gamecube_hardware_init=*/true);
+  ASSERT_TRUE(booted.ok) << booted.detail;
+
+  EXPECT_TRUE(g_controller_interface.IsInit())
+      << "a hardware-init boot left SerialInterfaceManager's poll without an initialized "
+         "ControllerInterface to call UpdateInput() on";
+
+  PowerPC::GcnPort::ShutdownBootedImage(system);
+
+  EXPECT_FALSE(g_controller_interface.IsInit())
+      << "ShutdownBootedImage leaked an initialized ControllerInterface into the next boot";
+
+  File::DeleteDirRecursively(profile_path);
+}
+
+TEST(GcnPortRuntime, HardwareInitBootOwnsHeadlessControllerInterface)
+{
+  std::thread cpu_thread(RunHeadlessControllerInterfaceScenario);
   cpu_thread.join();
 }
 
