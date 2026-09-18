@@ -415,12 +415,15 @@ void RunBlockBoundaryAndCoreTimingScenario()
   }
 
   constexpr u32 PROGRAM_ADDRESS = 0x80009000;
-  // Three adds then an unconditional branch back to the first of them: one straight-line block of
-  // four instructions that repeats forever, so every dispatch after the first is a cache hit and
-  // each completed block is observable as exactly +3 in r3.
+  // Three adds then an unconditional branch back to the first of them: a four-instruction loop in
+  // which exactly three of every four instructions retired is an increment of r3. How many of those
+  // iterations the analyzer folds into one block is its own decision -- it follows the unconditional
+  // backward branch, and has been observed forming both a 4-instruction and a 12-instruction block
+  // for this body -- so the assertions below are written against that ratio rather than any fixed
+  // block size, which is not part of this API's contract.
   constexpr u32 BRANCH_BACK_THREE_INSTRUCTIONS = 0x4bfffff4;
-  constexpr u32 ADDS_PER_BLOCK = 3;
-  constexpr u32 INSTRUCTIONS_PER_BLOCK = 4;
+  constexpr u32 ADDS_PER_ITERATION = 3;
+  constexpr u32 INSTRUCTIONS_PER_ITERATION = 4;
   const std::vector<u8> program = BigEndianImage(
       {ADDI_R3_R3_1, ADDI_R3_R3_1, ADDI_R3_R3_1, BRANCH_BACK_THREE_INSTRUCTIONS});
   const auto identity = MakeIdentity(5);
@@ -443,11 +446,20 @@ void RunBlockBoundaryAndCoreTimingScenario()
     const u32 r3_before = ppc_state.gpr[3];
     const auto outcome = runtime.ExecuteJitBlock();
 
-    EXPECT_EQ(outcome.instruction_count, INSTRUCTIONS_PER_BLOCK)
-        << "dispatch " << dispatch << " did not run one whole block";
-    EXPECT_EQ(ppc_state.gpr[3] - r3_before, ADDS_PER_BLOCK)
-        << "dispatch " << dispatch << " ran " << (ppc_state.gpr[3] - r3_before)
-        << " adds, i.e. not exactly one block";
+    // Blocks must stay block-sized. MAIN_ENABLE_DEBUGGING would also make the dispatcher exit once
+    // per block, but it additionally drives the analyzer into single-instruction blocks; this is the
+    // assertion that tells the two apart.
+    EXPECT_GT(outcome.instruction_count, 1u)
+        << "dispatch " << dispatch << " ran a single-instruction block, not a real one";
+
+    // instruction_count is read from the block that STARTED at the pc this dispatch entered, so if
+    // the dispatcher chained a second block the adds would scale while instruction_count would not.
+    // Equating the two through the loop body's fixed 3-adds-per-4-instructions ratio therefore
+    // pins "exactly one block ran" without hard-coding how large the analyzer made that block.
+    const u32 adds = ppc_state.gpr[3] - r3_before;
+    EXPECT_EQ(adds * INSTRUCTIONS_PER_ITERATION, outcome.instruction_count * ADDS_PER_ITERATION)
+        << "dispatch " << dispatch << " retired " << adds << " adds against a block of "
+        << outcome.instruction_count << " instructions, i.e. not exactly one block";
 
     const u64 ticks = core_timing.GetTicks();
     EXPECT_GT(ticks, previous_ticks) << "the CoreTiming global timer did not advance across "
