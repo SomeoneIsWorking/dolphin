@@ -17,6 +17,7 @@
 #include "Core/PowerPC/GcnPortRuntime.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/System.h"
+#include "Common/Logging/LogManager.h"
 #include "InputCommon/ControllerInterface/ControllerInterface.h"
 #include "UICommon/UICommon.h"
 #include "VideoCommon/AbstractGfx.h"
@@ -502,13 +503,25 @@ TEST(GcnPortRuntime, ExecuteJitBlockAdvancesCoreTimingAndRunsExactlyOneBlock)
   cpu_thread.join();
 }
 
-// SerialInterfaceManager's periodic poll calls g_controller_interface.UpdateInput() unconditionally,
-// before and independently of asking any SI channel for data, and that call asserts on m_is_init.
-// Forcing every channel to SIDEVICE_NONE is therefore not sufficient -- the poll still runs, because
-// an SI poll with nothing plugged in is what real hardware does. A hardware-init boot must leave the
-// interface initialized in its headless, no-devices-present form, and must hand it back on shutdown
-// so a second boot in the same process starts from the same state.
-void RunHeadlessControllerInterfaceScenario()
+// Dolphin's subsystems reach some of their owners through raw singletons they never check, so a boot
+// that leaves one absent does not fail -- it crashes later, in whichever subsystem touches it first.
+// Two of those are covered here.
+//
+// The log manager is reached through a raw pointer by, among others,
+// FileMonitor::FileLogger::Log, which DVDThread::ProcessReadRequest calls on every disc FILE read:
+// measured as a SIGSEGV on the DVD thread with LogManager::IsEnabled's `this` at null, the first
+// time a boot read a file rather than the raw disc header. It is required by every boot, which is
+// why it is checked here on the minimal one that brings no hardware up at all.
+//
+// The controller interface is required only by a hardware-init boot: SerialInterfaceManager's
+// periodic poll calls g_controller_interface.UpdateInput() unconditionally, before and
+// independently of asking any SI channel for data, and that call asserts on m_is_init. Forcing
+// every channel to SIDEVICE_NONE is not sufficient, because the poll still runs -- an SI poll with
+// nothing plugged in is what real hardware does.
+//
+// Both must be handed back on shutdown, so a second boot in the same process starts from the same
+// state rather than leaking or double-initializing.
+void RunHeadlessSubsystemOwnershipScenario()
 {
   const std::string profile_path = File::CreateTempDir();
   if (profile_path.empty())
@@ -522,6 +535,18 @@ void RunHeadlessControllerInterfaceScenario()
   const auto identity = MakeIdentity(6);
 
   Core::System& system = Core::System::GetInstance();
+
+  // Even the minimal boot, which brings no hardware up, must leave the log manager present.
+  const auto minimal = PowerPC::GcnPort::BootAuthenticatedImage(
+      system, identity, program, PROGRAM_ADDRESS, PROGRAM_ADDRESS,
+      PowerPC::GcnPort::GameCubeBootOptions{.apply_os_init = true});
+  ASSERT_TRUE(minimal.ok) << minimal.detail;
+  EXPECT_NE(Common::Log::LogManager::GetInstance(), nullptr)
+      << "a boot left Dolphin's unchecked log-manager singleton absent";
+  PowerPC::GcnPort::ShutdownBootedImage(system);
+  EXPECT_EQ(Common::Log::LogManager::GetInstance(), nullptr)
+      << "ShutdownBootedImage leaked a log manager into the next boot";
+
   const auto booted = PowerPC::GcnPort::BootAuthenticatedImage(
       system, identity, program, PROGRAM_ADDRESS, PROGRAM_ADDRESS,
       PowerPC::GcnPort::GameCubeBootOptions{.apply_os_init = true, .apply_hardware_init = true});
@@ -539,9 +564,9 @@ void RunHeadlessControllerInterfaceScenario()
   File::DeleteDirRecursively(profile_path);
 }
 
-TEST(GcnPortRuntime, HardwareInitBootOwnsHeadlessControllerInterface)
+TEST(GcnPortRuntime, BootOwnsTheSubsystemsDolphinDereferencesUnchecked)
 {
-  std::thread cpu_thread(RunHeadlessControllerInterfaceScenario);
+  std::thread cpu_thread(RunHeadlessSubsystemOwnershipScenario);
   cpu_thread.join();
 }
 
