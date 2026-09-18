@@ -521,6 +521,76 @@ TEST(GcnPortRuntime, HardwareInitBootOwnsHeadlessControllerInterface)
   cpu_thread.join();
 }
 
+// ExecuteJitBlocks exists because one block per host call costs a host round trip per block: against
+// exact GMSE01 it measured ~180,000 blocks/second, i.e. ~740,000 guest instructions/second, far under
+// GameCube speed. A batch lifts gcnport's one-block slice cap so the dispatcher chains direct-linked
+// blocks natively.
+//
+// The contract this pins is that speed is bought without giving up measurability or correctness:
+// every block still reports itself through the JIT's own per-block callback, so the counters advance
+// by exactly the number of blocks the batch claims; a batch runs far more blocks per call than the
+// one-block path; and the one-block path still works afterwards, proving the lifted cap was restored
+// rather than leaked.
+void RunBatchedExecutionScenario()
+{
+  const std::string profile_path = File::CreateTempDir();
+  if (profile_path.empty())
+  {
+    ADD_FAILURE() << "failed to create an isolated Dolphin user directory";
+    return;
+  }
+
+  constexpr u32 PROGRAM_ADDRESS = 0x8000b000;
+  constexpr u32 BRANCH_BACK_THREE_INSTRUCTIONS = 0x4bfffff4;
+  const std::vector<u8> program = BigEndianImage(
+      {ADDI_R3_R3_1, ADDI_R3_R3_1, ADDI_R3_R3_1, BRANCH_BACK_THREE_INSTRUCTIONS});
+  const auto identity = MakeIdentity(7);
+
+  Core::System& system = Core::System::GetInstance();
+  const auto booted = PowerPC::GcnPort::BootAuthenticatedImage(
+      system, identity, program, PROGRAM_ADDRESS, PROGRAM_ADDRESS,
+      /*apply_gamecube_os_init=*/true);
+  ASSERT_TRUE(booted.ok) << booted.detail;
+
+  PowerPC::GcnPort::RuntimeSession runtime(system, identity);
+
+  // A batch must be asked for real work; zero is a caller error, not an empty success.
+  const auto empty = runtime.ExecuteJitBlocks(0);
+  EXPECT_TRUE(empty.backend_fault);
+  EXPECT_EQ(empty.blocks_executed, 0u);
+
+  constexpr u64 REQUESTED_BLOCKS = 5000;
+  const u64 executions_before = runtime.GetExecutionCounters().jit_block_executions;
+  const auto batch = runtime.ExecuteJitBlocks(REQUESTED_BLOCKS);
+
+  EXPECT_FALSE(batch.backend_fault) << batch.detail;
+  EXPECT_GE(batch.blocks_executed, REQUESTED_BLOCKS) << batch.detail;
+  // The counters are the runtime's own ledger; a batch that ran blocks the ledger never saw would
+  // buy its speed by going dark, which is the one trade this API must not make.
+  EXPECT_EQ(runtime.GetExecutionCounters().jit_block_executions - executions_before,
+            batch.blocks_executed);
+
+  // The point of the API: one host call covered far more than the one block the stepping path does.
+  EXPECT_GT(batch.blocks_executed, 1u);
+
+  // The lifted slice cap must be restored, or every later one-block call would silently run a whole
+  // slice instead.
+  const u64 before_single = runtime.GetExecutionCounters().jit_block_executions;
+  const auto single = runtime.ExecuteJitBlock();
+  EXPECT_NE(single.kind, PowerPC::GcnPort::JitBlockKind::BackendFault) << single.detail;
+  EXPECT_EQ(runtime.GetExecutionCounters().jit_block_executions - before_single, 1u)
+      << "the one-block slice cap was not restored after a batch";
+
+  PowerPC::GcnPort::ShutdownBootedImage(system);
+  File::DeleteDirRecursively(profile_path);
+}
+
+TEST(GcnPortRuntime, ExecuteJitBlocksChainsBlocksAndRestoresTheOneBlockCap)
+{
+  std::thread cpu_thread(RunBatchedExecutionScenario);
+  cpu_thread.join();
+}
+
 TEST(GcnPortRuntime, PublicAdapterBootExecuteOriginalAndTypedFallback)
 {
   std::thread cpu_thread(RunPublicAdapterScenario);

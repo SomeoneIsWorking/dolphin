@@ -136,6 +136,23 @@ struct JitBlockOutcome
   std::string detail;
 };
 
+// The public batched execution result. A batch deliberately does NOT bound itself to one block: it
+// lifts the one-block slice cap so the generated dispatcher chains direct-linked blocks natively,
+// which is the only way this runtime reaches usable guest speed. Every block still reports itself
+// through the JIT's own per-block callback, so the ExecutionCounters ledger stays exactly as
+// complete as it is in one-block mode -- a batch trades per-call block granularity for speed, never
+// measurability.
+struct JitBatchOutcome
+{
+  // Blocks actually retired, which may exceed the requested minimum (a slice is not cut mid-block)
+  // and falls short of it only when the batch stopped early, in which case `detail` says why.
+  u64 blocks_executed = 0;
+  // The PC the guest stopped at.
+  u32 guest_pc = 0;
+  bool backend_fault = false;
+  std::string detail;
+};
+
 struct InterpretedBlockResult
 {
   u32 guest_pc = 0;
@@ -244,13 +261,28 @@ public:
   [[nodiscard]] const ExecutionCounters& GetExecutionCounters() const { return m_counters; }
 
   // Executes exactly one observable guest basic block from the live PC through the ordinary
-  // Jit64/JitArm64 dispatcher: it forces the PowerPC downcount to a value smaller than any real
-  // block's cycle cost immediately before entering the dispatcher, so the generated dispatch loop
-  // returns to this call after completing the first block instead of chaining further direct-linked
-  // blocks. The block is compiled on a cache miss and reported as CacheHit on any later entry with
-  // the same address and feature flags. An unavailable JIT is a JitBlockKind::BackendFault, never a
-  // refusal.
+  // Jit64/JitArm64 dispatcher. One block per call comes from capping the CoreTiming SLICE at one
+  // cycle (see BootAuthenticatedImage): the generated dispatcher returns to its caller at a slice
+  // boundary, so a minimal slice cannot chain a second direct-linked block. It deliberately does not
+  // touch the PowerPC downcount, which CoreTiming::Advance() reads to account for the time the
+  // previous slice consumed. The block is compiled on a cache miss and reported as CacheHit on any
+  // later entry with the same address and feature flags. An unavailable JIT is a
+  // JitBlockKind::BackendFault, never a refusal.
+  //
+  // This granularity costs roughly a host round trip per block, so it is the right tool for stepping,
+  // diagnostics and hook-ordered dispatch, and the wrong one for running a title. Use
+  // ExecuteJitBlocks for that.
   [[nodiscard]] JitBlockOutcome ExecuteJitBlock();
+
+  // Executes at least `minimum_blocks` guest basic blocks from the live PC, letting the dispatcher
+  // chain direct-linked blocks within ordinary CoreTiming slices instead of returning after each
+  // one. Scheduled hardware events still bound each slice exactly as they do during normal Dolphin
+  // execution, so hardware timing is unaffected; only gcnport's own one-block cap is lifted.
+  //
+  // Refuses rather than running while a one-shot original ticket is armed: those tickets are
+  // consumed by the per-dispatch driver loop, and a batch has no per-dispatch boundary at which to
+  // consume one, so allowing it would silently drop the suppression.
+  [[nodiscard]] JitBatchOutcome ExecuteJitBlocks(u64 minimum_blocks);
 
   // Executes the given already-refused PC through Dolphin's ordinary interpreter for at most
   // `maximum_instruction_count` guest instructions, then returns without resuming JIT dispatch
