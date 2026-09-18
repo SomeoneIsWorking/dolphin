@@ -319,6 +319,18 @@ BootResult BootAuthenticatedImage(Core::System& system, const ExecutionIdentity&
   // DVDInterface and the DVD thread are among HW::Init's device owners, so there is nothing to mount
   // a disc into without it. Refuse here, before any global Dolphin state is touched, rather than
   // booting successfully with the disc silently absent.
+  if (options.run_apploader && options.disc_image_path.empty())
+  {
+    return {.ok = false, .detail = "running an apploader requires the disc it lives on"};
+  }
+
+  if (options.run_apploader && !options.apply_os_init)
+  {
+    return {.ok = false,
+            .detail = "an apploader is guest code, so it requires apply_os_init's address "
+                      "translation setup"};
+  }
+
   if (options.apply_media_init && !options.apply_hardware_init)
   {
     return {.ok = false,
@@ -460,7 +472,33 @@ BootResult BootAuthenticatedImage(Core::System& system, const ExecutionIdentity&
       return {.ok = false,
               .detail = "could not read the disc header from " + options.disc_image_path};
     }
+    DiscIO::VolumeDisc& volume = *disc;
     system.GetDVDInterface().SetDisc(std::move(disc), {});
+
+    // The apploader is the disc's own code, and running it is what loads the title's file system
+    // table and publishes its low-memory pointers. DVDReadDiscID above reads only the 0x20-byte
+    // header, so without this a title's DVDConvertPathToEntrynum walks a null FST, every file
+    // lookup it makes fails, and it proceeds on null pointers -- measured against a retail title as
+    // reads from address 0x00000008 inside the SDK's own path-to-entry conversion.
+    //
+    // It also copies the title's executable sections from the disc, which for a caller booting that
+    // same title's pre-extracted image writes the same bytes over the same addresses. The caller's
+    // entry point still wins: the apploader leaves the disc's entry in pc and this function
+    // overwrites it below with the one the caller authenticated, so a caller booting something
+    // other than this disc's executable gets what it asked for rather than the disc's.
+    //
+    // DVDInterface owns the volume after the move, so the reference above stays valid; the
+    // apploader reads through it directly rather than through the drive.
+    if (options.run_apploader)
+    {
+      const Core::CPUThreadGuard guard(system);
+      if (!CBoot::LoadGameCubeDiscViaApploader(system, guard, volume, {}))
+      {
+        TearDownIncompleteBringUp(system, options.apply_hardware_init);
+        return {.ok = false,
+                .detail = "the apploader on " + options.disc_image_path + " did not run to completion"};
+      }
+    }
   }
 
   auto& state = system.GetPPCState();

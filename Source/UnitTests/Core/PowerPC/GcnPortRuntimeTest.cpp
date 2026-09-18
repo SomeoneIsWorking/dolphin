@@ -653,6 +653,24 @@ void RunDiscRefusalScenario()
   EXPECT_FALSE(unreadable.ok);
   EXPECT_NE(unreadable.detail.find(missing), std::string::npos) << unreadable.detail;
 
+  // An apploader lives on a disc and is guest code, so asking for one without a disc to read it
+  // from, or without the address translation it runs under, has no correct answer either. Both are
+  // refused before any global state is touched, which is what lets the ordinary boot below succeed.
+  const auto no_disc = PowerPC::GcnPort::BootAuthenticatedImage(
+      system, identity, program, PROGRAM_ADDRESS, PROGRAM_ADDRESS,
+      PowerPC::GcnPort::GameCubeBootOptions{
+          .apply_os_init = true, .apply_hardware_init = true, .run_apploader = true});
+  EXPECT_FALSE(no_disc.ok);
+  EXPECT_NE(no_disc.detail.find("disc"), std::string::npos) << no_disc.detail;
+
+  const auto no_os_init = PowerPC::GcnPort::BootAuthenticatedImage(
+      system, identity, program, PROGRAM_ADDRESS, PROGRAM_ADDRESS,
+      PowerPC::GcnPort::GameCubeBootOptions{.apply_hardware_init = true,
+                                            .disc_image_path = missing,
+                                            .run_apploader = true});
+  EXPECT_FALSE(no_os_init.ok);
+  EXPECT_NE(no_os_init.detail.find("apply_os_init"), std::string::npos) << no_os_init.detail;
+
   // That failed boot must have handed back every global it took, or this ordinary boot cannot run.
   const auto recovered = PowerPC::GcnPort::BootAuthenticatedImage(
       system, identity, program, PROGRAM_ADDRESS, PROGRAM_ADDRESS,

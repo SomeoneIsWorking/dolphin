@@ -266,6 +266,18 @@ struct GameCubeBootOptions
   // owns a real renderer replaces the backend selection, but still needs an `AbstractGfx` owner
   // here, because that is what keeps the guest's GP writes draining.
   bool apply_media_init = false;
+
+  // `run_apploader` runs the mounted disc's own apploader, which is what a real console does between
+  // reading the disc header and entering a title. It is what loads the disc's file system table and
+  // publishes its low-memory pointers; `disc_image_path` alone reads only the 0x20-byte header, so
+  // without this a title's DVDConvertPathToEntrynum walks a null FST and every file lookup fails.
+  //
+  // It defaults to false because a caller booting a synthetic image has no file system to load. It
+  // requires a disc to run one from, and `apply_os_init`, because the apploader is guest code and
+  // needs the address translation that flag establishes. The apploader also copies the title's
+  // executable sections from the disc; the caller's authenticated image and entry point still win,
+  // since both are applied after this runs.
+  bool run_apploader = false;
 };
 
 [[nodiscard]] BootResult BootAuthenticatedImage(Core::System& system,
