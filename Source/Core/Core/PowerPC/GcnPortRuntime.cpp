@@ -15,10 +15,14 @@
 #include "Common/Logging/LogManager.h"
 #include "Core/Boot/Boot.h"
 #include "Core/Config/MainSettings.h"
+#include "Core/ConfigLoaders/GameConfigLoader.h"
 #include "Core/ConfigManager.h"
 #include "Core/Core.h"
 #include "Core/CoreTiming.h"
+#include "Core/DSPEmulator.h"
 #include "Core/HW/CPU.h"
+#include "Core/HW/DSP.h"
+#include "Core/HW/DVD/DVDInterface.h"
 #include "Core/HW/EXI/EXI_Device.h"
 #include "Core/HW/HW.h"
 #include "Core/HW/Memmap.h"
@@ -30,11 +34,8 @@
 #include "Core/PowerPC/JitCommon/JitBase.h"
 #include "Core/PowerPC/JitInterface.h"
 #include "Core/PowerPC/PowerPC.h"
-#include "DiscIO/Volume.h"
-#include "Core/HW/DVD/DVDInterface.h"
 #include "Core/System.h"
-#include "Core/DSPEmulator.h"
-#include "Core/HW/DSP.h"
+#include "DiscIO/Volume.h"
 #include "InputCommon/ControllerInterface/ControllerInterface.h"
 #include "VideoCommon/AsyncRequests.h"
 #include "VideoCommon/Fifo.h"
@@ -110,12 +111,13 @@ void RescheduleBlockBound(Core::System& system, u64, s64)
   system.GetCoreTiming().ScheduleEvent(1, g_block_bound_event);
 }
 
-// Lifts the one-block slice cap for the duration of a batch and restores it afterwards. Removing the
-// bounding event outright, rather than rescheduling it further out, is deliberate: CoreTiming already
-// sizes a slice from the next genuinely scheduled event and caps it at its own MAX_SLICE_LENGTH, so
-// with our event gone the batch runs on exactly the slice lengths ordinary Dolphin execution would
-// use. Choosing some larger interval here instead would invent a second, competing slice policy.
-// Nothing can re-arm the event while it is removed, because only its own callback reschedules it.
+// Lifts the one-block slice cap for the duration of a batch and restores it afterwards. Removing
+// the bounding event outright, rather than rescheduling it further out, is deliberate: CoreTiming
+// already sizes a slice from the next genuinely scheduled event and caps it at its own
+// MAX_SLICE_LENGTH, so with our event gone the batch runs on exactly the slice lengths ordinary
+// Dolphin execution would use. Choosing some larger interval here instead would invent a second,
+// competing slice policy. Nothing can re-arm the event while it is removed, because only its own
+// callback reschedules it.
 class LiftedBlockBound final
 {
 public:
@@ -156,15 +158,15 @@ bool g_media_initialized = false;
 // defaults, so bringing up hardware registers never touches host disk (the default EXI slot A
 // device is a MemoryCardFolder that scans/creates a save directory for whatever the current game ID
 // happens to be), never indexes an uninitialized host ControllerInterface (the default SI channel 0
-// device is a live GameCube controller that polls Pad::GetStatus), and never opens a real host audio
-// device (AudioInterfaceManager::Init() unconditionally dereferences system.GetSoundStream(), so a
-// SoundStream must already exist; the config-selected default backend, e.g. Cubeb, would otherwise
-// open a real device). All three are ordinary real hardware/software states, not a fabricated
-// shortcut: a real console can boot with its controller unplugged and no memory card inserted, and
-// Dolphin's own maintained NullSound backend is exactly the "no audio output" state its UI already
-// exposes, not a gcnport-invented stub. A title consumer that wants persistent input/storage/audio
-// devices attaches them afterward through this same Config/SoundStream surface; gcnport does not own
-// that policy.
+// device is a live GameCube controller that polls Pad::GetStatus), and never opens a real host
+// audio device (AudioInterfaceManager::Init() unconditionally dereferences system.GetSoundStream(),
+// so a SoundStream must already exist; the config-selected default backend, e.g. Cubeb, would
+// otherwise open a real device). All three are ordinary real hardware/software states, not a
+// fabricated shortcut: a real console can boot with its controller unplugged and no memory card
+// inserted, and Dolphin's own maintained NullSound backend is exactly the "no audio output" state
+// its UI already exposes, not a gcnport-invented stub. A title consumer that wants persistent
+// input/storage/audio devices attaches them afterward through this same Config/SoundStream surface;
+// gcnport does not own that policy.
 void ForceNoHostBackedGameCubeDevices()
 {
   for (int channel = 0; channel < SerialInterface::MAX_SI_CHANNELS; ++channel)
@@ -229,15 +231,17 @@ HookResult HookResult::RunOriginalOnce()
 // Brings up the periodic media devices Dolphin's own EmuThread initializes AROUND HW::Init().
 //
 // HW::Init() builds the MMIO handler table and SystemTimers::Init() schedules the VI, DSP and audio
-// DMA events, so a title's interrupts already arrive without this. What it does not do is give those
-// devices anything to talk to. Measured against a retail title: with no FIFO consumer, a GXDrawDone
+// DMA events, so a title's interrupts already arrive without this. What it does not do is give
+// those devices anything to talk to. Measured against a retail title: with no FIFO consumer, a
+// GXDrawDone
 // -- which writes a draw-done token and then sleeps until the PixelEngine finish interrupt reports
 // the GPU has drained past it -- never wakes, because no interrupt is ever raised for a token
 // nothing consumed. Every other thread was idle on its own work queue, so the whole title sat in
 // the SDK's scheduler idle loop while VI interrupts kept arriving at 60 Hz. DSPManager::Init() has
 // the matching gap: it constructs a DSPEmulator without booting its ucode, so a title's DSP
-// handshake never completes and whichever thread performs it waits the same way. Both are separate calls in Core.cpp's EmuThread (GetInitializedVideoGuard, then
-// GetDSPEmulator()->Initialize), which a bare adapter boot never runs.
+// handshake never completes and whichever thread performs it waits the same way. Both are separate
+// calls in Core.cpp's EmuThread (GetInitializedVideoGuard, then GetDSPEmulator()->Initialize),
+// which a bare adapter boot never runs.
 //
 // The video backend is pinned to Null. WindowSystemInfo defaults to WindowSystemType::Headless, and
 // Null implements the AbstractGfx interface without opening a host device or a window -- the same
@@ -245,10 +249,10 @@ HookResult HookResult::RunOriginalOnce()
 // real renderer replaces the backend selection; it still needs SOME AbstractGfx owner here, because
 // the FIFO's consumer is what keeps the guest's GP writes draining.
 //
-// Single-core is the only mode this adapter supports: ExecuteJitBlock's contract is "run exactly one
-// observable block on the calling thread", which a separate GPU thread would make unobservable. So
-// the calling thread is declared as the GPU thread and AsyncRequests is put in passthrough, exactly
-// as Core.cpp does when IsDualCoreMode() is false.
+// Single-core is the only mode this adapter supports: ExecuteJitBlock's contract is "run exactly
+// one observable block on the calling thread", which a separate GPU thread would make unobservable.
+// So the calling thread is declared as the GPU thread and AsyncRequests is put in passthrough,
+// exactly as Core.cpp does when IsDualCoreMode() is false.
 bool InitializeMediaDevices(Core::System& system)
 {
   // SetCurrent, matching how ForceNoHostBackedGameCubeDevices above pins its own device selections:
@@ -324,8 +328,8 @@ void TearDownIncompleteBringUp(Core::System& system, bool hardware_initialized)
 }
 
 BootResult BootAuthenticatedImage(Core::System& system, const ExecutionIdentity& identity,
-                                   std::span<const u8> image, u32 load_address, u32 entry_point,
-                                   const GameCubeBootOptions& options)
+                                  std::span<const u8> image, u32 load_address, u32 entry_point,
+                                  const GameCubeBootOptions& options)
 {
   if (!identity.image.IsAuthenticated())
     return {.ok = false, .detail = "image identity is not authenticated"};
@@ -337,9 +341,9 @@ BootResult BootAuthenticatedImage(Core::System& system, const ExecutionIdentity&
     return {.ok = false, .detail = "load address or entry point is not instruction-aligned"};
   if (entry_point < load_address || entry_point - load_address >= image.size())
     return {.ok = false, .detail = "entry point is outside the loaded image"};
-  // DVDInterface and the DVD thread are among HW::Init's device owners, so there is nothing to mount
-  // a disc into without it. Refuse here, before any global Dolphin state is touched, rather than
-  // booting successfully with the disc silently absent.
+  // DVDInterface and the DVD thread are among HW::Init's device owners, so there is nothing to
+  // mount a disc into without it. Refuse here, before any global Dolphin state is touched, rather
+  // than booting successfully with the disc silently absent.
   if (options.run_apploader && options.disc_image_path.empty())
   {
     return {.ok = false, .detail = "running an apploader requires the disc it lives on"};
@@ -370,13 +374,59 @@ BootResult BootAuthenticatedImage(Core::System& system, const ExecutionIdentity&
   SConfig::Init();
 
   // Dolphin's subsystems reach the log manager through a raw singleton pointer and do not check it.
-  // FileMonitor::FileLogger::Log, which DVDThread::ProcessReadRequest calls on every disc FILE read,
-  // dereferences it unconditionally -- measured as a SIGSEGV on the DVD thread with
+  // FileMonitor::FileLogger::Log, which DVDThread::ProcessReadRequest calls on every disc FILE
+  // read, dereferences it unconditionally -- measured as a SIGSEGV on the DVD thread with
   // LogManager::IsEnabled's `this` at null, the first time a boot read a file rather than the raw
   // disc header. UICommon::Init is where a frontend brings this up, after Config and SConfig, and
   // this embedding does not call that. Bring up the one piece of it Core requires, in the same
-  // order, rather than the whole frontend, whose config layers this file deliberately does not want.
+  // order, rather than the whole frontend, whose config layers this file deliberately does not
+  // want.
   Common::Log::LogManager::Init();
+
+  // The disc is opened before any hardware exists because what it is decides how the hardware must
+  // behave. Dolphin ships per-title correctness settings in Sys/GameSettings, and for titles that
+  // need them the defaults are wrong: Super Mario Sunshine's GMS.ini sets EFBToTextureEnable=False,
+  // and without it Dolphin's default "keep EFB copies in VRAM" hack zeroes the copy's destination
+  // in guest RAM (TextureCacheBase::UninitializeEFBMemory). Measured against that title, the zeroed
+  // range ran past the framebuffer it had allocated and wiped the live object immediately after it,
+  // and the title branched through the resulting null vtable on its first frame. These layers are
+  // shipped Dolphin data, in the same category as the IPL fonts and the DSP ROM this boot already
+  // resolves through File::GetSysDirectory(), so they are applied whenever a disc is present.
+  //
+  // Deliberately only the global layer. ConfigLoaders::GenerateLocalGameConfigLoader() reads the
+  // *user's* per-game INI, which would make an embedded boot depend on whatever that person last
+  // set in Dolphin -- the same reason the Base layer above is empty rather than the frontend's.
+  //
+  // Opening it here is also the only ordering that works: Config::AddLayer's change notification
+  // reaches VideoCommon through CPUThreadConfigCallback, which a frontend's CPU thread pumps and
+  // this adapter's caller-driven block dispatch does not, so a layer added after the video backend
+  // came up would compile into g_ActiveConfig only by luck.
+  std::unique_ptr<DiscIO::VolumeDisc> disc;
+  if (!options.disc_image_path.empty())
+  {
+    disc = DiscIO::CreateDisc(options.disc_image_path);
+    if (!disc)
+    {
+      Common::Log::LogManager::Shutdown();
+      SConfig::Shutdown();
+      Config::Shutdown();
+      return {.ok = false,
+              .detail = "could not open a GameCube/Wii disc image at " + options.disc_image_path};
+    }
+    Config::AddLayer(ConfigLoaders::GenerateGlobalGameConfigLoader(
+        disc->GetGameID(), disc->GetRevision().value_or(0)));
+
+    // The console has to be the one this disc expects. CBoot::SetupGCMemory publishes the video
+    // format at 0x800000CC from SConfig's region, EmulatedBS2_GC picks the IPL font encoding and
+    // the BS2 region settings from it, and SConfig leaves it Unknown -- which DiscIO::IsNTSC reads
+    // as PAL. Measured with a US disc: the title built a PAL render mode (xfbHeight 530) while its
+    // own framebuffer allocation was the NTSC-sized 0xa5000 = 640x528x2, so the display copy ran
+    // two lines past the end of that block and over the live object the heap had placed directly
+    // after it. SConfig::SetPathsAndGameMetadata is where a frontend takes this from the volume;
+    // this adapter takes it from the same place, and leaves the frontend's fallback-region setting
+    // alone because a disc that states its own region does not need one.
+    SConfig::GetInstance().m_region = disc->GetRegion();
+  }
 
   // HW::Init() performs its own system.GetMemory().Init() internally (it must: MemoryManager::
   // InitMMIO(), which builds the MMIO::Mapping handler table, depends on the rest of HW::Init()'s
@@ -395,10 +445,10 @@ BootResult BootAuthenticatedImage(Core::System& system, const ExecutionIdentity&
   // table), so a JIT-generated fastmem load/store that targets one deliberately raises SIGSEGV to
   // reach the safe MMU/MMIO path. Dolphin's own maintained CpuThread() installs the handler for
   // exactly this reason (Core.cpp, "The JIT need to be able to intercept faults, both for fastmem
-  // and for the BLR optimization"); a bare adapter boot never runs that function, so it must install
-  // the same handler itself once real hardware registers are reachable, or an ordinary fastmem-
-  // optimized access to one crashes the process outright instead of reaching the registered MMIO
-  // handler.
+  // and for the BLR optimization"); a bare adapter boot never runs that function, so it must
+  // install the same handler itself once real hardware registers are reachable, or an ordinary
+  // fastmem- optimized access to one crashes the process outright instead of reaching the
+  // registered MMIO handler.
   if (options.apply_hardware_init)
   {
     ForceNoHostBackedGameCubeDevices();
@@ -440,16 +490,16 @@ BootResult BootAuthenticatedImage(Core::System& system, const ExecutionIdentity&
   }
 
   // ExecuteJitBlock's contract is "run exactly one observable JIT block, then return". Dolphin's
-  // generated dispatcher only returns to its caller at a slice boundary (its `do_timing` path, taken
-  // when the CPU state is not Running), so bounding a call to one block means bounding the SLICE to
-  // one block. CoreTiming already sizes every slice to end exactly at the next scheduled event
-  // (CoreTimingManager::Advance: `slice_length = min(next_event.time - global_timer, ...)`), so an
-  // event kept permanently one cycle ahead keeps every slice minimal.
+  // generated dispatcher only returns to its caller at a slice boundary (its `do_timing` path,
+  // taken when the CPU state is not Running), so bounding a call to one block means bounding the
+  // SLICE to one block. CoreTiming already sizes every slice to end exactly at the next scheduled
+  // event (CoreTimingManager::Advance: `slice_length = min(next_event.time - global_timer, ...)`),
+  // so an event kept permanently one cycle ahead keeps every slice minimal.
   //
   // Bounding this way is what lets ExecuteJitBlock leave `ppc_state.downcount` alone, which is
-  // required for correct timekeeping -- see the long comment there. MAIN_ENABLE_DEBUGGING would also
-  // produce a per-block dispatcher exit, but it is the wrong tool: it additionally drives the block
-  // analyzer into single-instruction blocks (JitBase::RefreshConfig ->
+  // required for correct timekeeping -- see the long comment there. MAIN_ENABLE_DEBUGGING would
+  // also produce a per-block dispatcher exit, but it is the wrong tool: it additionally drives the
+  // block analyzer into single-instruction blocks (JitBase::RefreshConfig ->
   // analyzer.SetDebuggingEnabled), destroying exactly the block-level granularity this API exposes.
   auto& core_timing = system.GetCoreTiming();
   g_block_bound_event = core_timing.RegisterEvent("GcnPortBlockBound", RescheduleBlockBound);
@@ -482,16 +532,8 @@ BootResult BootAuthenticatedImage(Core::System& system, const ExecutionIdentity&
     CBoot::SetupGCMemory(system, guard);
   }
 
-  if (!options.disc_image_path.empty())
+  if (disc)
   {
-    std::unique_ptr<DiscIO::VolumeDisc> disc = DiscIO::CreateDisc(options.disc_image_path);
-    if (!disc)
-    {
-      TearDownIncompleteBringUp(system, options.apply_hardware_init);
-      return {.ok = false, .detail = "could not open a GameCube/Wii disc image at " +
-                                     options.disc_image_path};
-    }
-
     // What BS2 does with a disc before handing control to the title, in the order EmulatedBS2_GC
     // does it: read the 0x20-byte disc header to physical 0, which is also what moves the drive out
     // of its DiscIdNotRead state, then leave the volume mounted for the title's own reads. Without
@@ -527,7 +569,8 @@ BootResult BootAuthenticatedImage(Core::System& system, const ExecutionIdentity&
       {
         TearDownIncompleteBringUp(system, options.apply_hardware_init);
         return {.ok = false,
-                .detail = "the apploader on " + options.disc_image_path + " did not run to completion"};
+                .detail =
+                    "the apploader on " + options.disc_image_path + " did not run to completion"};
       }
     }
   }
@@ -655,12 +698,13 @@ JitBlockOutcome RuntimeSession::ExecuteJitBlock()
   // so on entry `downcount` must still be the natural remainder of the previous slice (normally
   // negative: the amount by which the last block overran it). Overwriting it with a sentinel makes
   // Advance() attribute the wrong cycle count to the slice that just ran. Writing 1 while
-  // slice_length was also 1 -- the steady state a one-block-at-a-time caller settles into -- yielded
-  // 1 - 1 == 0 and froze the global timer permanently, so no scheduled CoreTiming event could ever
-  // come due and no hardware completion interrupt was ever raised. Measured against exact GMSE01:
-  // the timer stuck at 30,891 ticks across 16,384 consecutive dispatches while the title spun
-  // forever inside __OSInitAudioSystem waiting on the ARAM DMA completion interrupt (INT_ARAM,
-  // DSP_CONTROL bit 0x20) that DSPManager::Do_ARAM_DMA had scheduled just 246 ticks ahead.
+  // slice_length was also 1 -- the steady state a one-block-at-a-time caller settles into --
+  // yielded 1 - 1 == 0 and froze the global timer permanently, so no scheduled CoreTiming event
+  // could ever come due and no hardware completion interrupt was ever raised. Measured against
+  // exact GMSE01: the timer stuck at 30,891 ticks across 16,384 consecutive dispatches while the
+  // title spun forever inside __OSInitAudioSystem waiting on the ARAM DMA completion interrupt
+  // (INT_ARAM, DSP_CONTROL bit 0x20) that DSPManager::Do_ARAM_DMA had scheduled just 246 ticks
+  // ahead.
   //
   // The sentinel never bounded anything either: Advance() reassigns downcount from the event queue
   // before the first block runs. One block per call comes from the one-cycle slice cap installed in
@@ -681,21 +725,21 @@ JitBlockOutcome RuntimeSession::ExecuteJitBlock()
   if (m_counters.fallback_events > fallback_before)
   {
     // Dolphin's JIT always compiles a whole block; an unsupported instruction inside it is executed
-    // through an embedded interpreter call rather than refusing the block outright. This is reported
-    // as a refusal so the framework-level fallback ledger still sees and budgets it.
+    // through an embedded interpreter call rather than refusing the block outright. This is
+    // reported as a refusal so the framework-level fallback ledger still sees and budgets it.
     outcome.kind = JitBlockKind::Refused;
     outcome.refusal_reason = m_last_fallback_reason;
   }
   else
   {
-    outcome.kind = m_counters.jit_blocks_compiled > compiled_before ? JitBlockKind::Compiled
-                                                                     : JitBlockKind::CacheHit;
+    outcome.kind = m_counters.jit_blocks_compiled > compiled_before ? JitBlockKind::Compiled :
+                                                                      JitBlockKind::CacheHit;
   }
   return outcome;
 }
 
 InterpretedBlockResult RuntimeSession::ExecuteRefusedBlock(u32 guest_pc,
-                                                            u32 maximum_instruction_count)
+                                                           u32 maximum_instruction_count)
 {
   Require(maximum_instruction_count != 0, "refused-block instruction bound is zero");
   auto& state = m_system.GetPPCState();
@@ -709,7 +753,8 @@ InterpretedBlockResult RuntimeSession::ExecuteRefusedBlock(u32 guest_pc,
   return {.guest_pc = guest_pc, .instruction_count = maximum_instruction_count};
 }
 
-InterpretedBlockResult RuntimeSession::ExecuteDiagnosticInterpreterBlock(u32 maximum_instruction_count)
+InterpretedBlockResult
+RuntimeSession::ExecuteDiagnosticInterpreterBlock(u32 maximum_instruction_count)
 {
   Require(maximum_instruction_count != 0, "diagnostic instruction bound is zero");
   const u32 guest_pc = m_system.GetPPCState().pc;
@@ -733,7 +778,7 @@ bool RuntimeSession::ExecuteOriginalOnce(const HookKey& key)
 }
 
 InterpretedBlockResult RuntimeSession::CallOriginalSynchronously(const HookKey& key,
-                                                                  u32 maximum_instruction_count)
+                                                                 u32 maximum_instruction_count)
 {
   Require(maximum_instruction_count != 0, "synchronous original-call instruction bound is zero");
   Require(key.IsValid() && key.identity == m_identity,
@@ -789,7 +834,7 @@ void RuntimeSession::RecordJitBlockExecutionFromJit(RuntimeSession* session, u32
 }
 
 void RuntimeSession::RecordFallbackFromJit(RuntimeSession* session, u32 address,
-                                            u32 reason_value) noexcept
+                                           u32 reason_value) noexcept
 {
   if (!session)
     Require(false, "generated fallback counter received a null runtime session");
@@ -881,9 +926,9 @@ JitBatchOutcome RuntimeSession::ExecuteJitBlocks(u64 minimum_blocks)
       m_system.GetPowerPC().SingleStep();
       if (m_counters.jit_block_executions == executions_before_slice)
       {
-        // A whole slice that retired no block at all will not start retiring them by being repeated,
-        // and looping on it would hang the caller instead of reporting the condition. Stop and say
-        // so; blocks_executed below reports exactly how far the batch actually got.
+        // A whole slice that retired no block at all will not start retiring them by being
+        // repeated, and looping on it would hang the caller instead of reporting the condition.
+        // Stop and say so; blocks_executed below reports exactly how far the batch actually got.
         outcome.detail = "a full slice retired no guest block";
         break;
       }
