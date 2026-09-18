@@ -3,21 +3,25 @@
 
 #include <gtest/gtest.h>
 
+#include <cstring>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "Common/Config/Config.h"
 #include "Common/FileUtil.h"
+#include "Common/IOFile.h"
+#include "Common/Logging/LogManager.h"
 #include "Core/ConfigManager.h"
 #include "Core/Core.h"
 #include "Core/CoreTiming.h"
 #include "Core/HW/CPU.h"
 #include "Core/HW/Memmap.h"
-#include "Core/PowerPC/Gekko.h"
 #include "Core/PowerPC/GcnPortRuntime.h"
+#include "Core/PowerPC/Gekko.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/System.h"
-#include "Common/Logging/LogManager.h"
+#include "DiscIO/Enums.h"
 #include "InputCommon/ControllerInterface/ControllerInterface.h"
 #include "UICommon/UICommon.h"
 #include "VideoCommon/AbstractGfx.h"
@@ -179,19 +183,21 @@ void RunPublicAdapterScenario()
   // the only synthetic shape this slice can bound to exactly one *guest-body* execution per call.
   //
   // HOOK_ADDRESS is a separate, straight-line (non-looping) block used only for the hook/
-  // ExecuteOriginalOnce proof. Dolphin's analyzer may merge several passes of a tight reflexive loop
-  // into one compiled unit (observed empirically: a plain two-instruction self-loop's originalSize
-  // came back as a multiple of 2, not exactly 2), and the native-hook guard is emitted at the top of
-  // the generated code, so a merged loop body re-evaluates that guard once per internal pass within a
-  // single ExecuteJitBlock() call. A one-shot ticket armed by ExecuteOriginalOnce would then be
-  // consumed by the first internal pass and leak a real hook invocation on the second. A block with no
-  // back-edge to itself has exactly one guard evaluation per compiled-block execution, so the hook
-  // proof uses HOOK_ADDRESS -> PROGRAM_LANDING_PAD_ADDRESS (itself a harmless branch-to-self stopping
-  // point, never hooked) instead of looping back into the hooked address.
+  // ExecuteOriginalOnce proof. Dolphin's analyzer may merge several passes of a tight reflexive
+  // loop into one compiled unit (observed empirically: a plain two-instruction self-loop's
+  // originalSize came back as a multiple of 2, not exactly 2), and the native-hook guard is emitted
+  // at the top of the generated code, so a merged loop body re-evaluates that guard once per
+  // internal pass within a single ExecuteJitBlock() call. A one-shot ticket armed by
+  // ExecuteOriginalOnce would then be consumed by the first internal pass and leak a real hook
+  // invocation on the second. A block with no back-edge to itself has exactly one guard evaluation
+  // per compiled-block execution, so the hook proof uses HOOK_ADDRESS ->
+  // PROGRAM_LANDING_PAD_ADDRESS (itself a harmless branch-to-self stopping point, never hooked)
+  // instead of looping back into the hooked address.
   std::vector<u8> program = BigEndianImage({ADDI_R3_R3_1, BRANCH_BACK_ONE_INSTRUCTION});
   program.resize(HOOK_ADDRESS - PROGRAM_ADDRESS, 0);
   // addi r3,r3,1 ; b PROGRAM_LANDING_PAD_ADDRESS (unconditional forward branch, no back edge).
-  constexpr u32 HOOK_BRANCH_DISPLACEMENT = PROGRAM_LANDING_PAD_ADDRESS - (HOOK_ADDRESS + sizeof(u32));
+  constexpr u32 HOOK_BRANCH_DISPLACEMENT =
+      PROGRAM_LANDING_PAD_ADDRESS - (HOOK_ADDRESS + sizeof(u32));
   constexpr u32 BRANCH_TO_LANDING_PAD = 0x48000000 | (HOOK_BRANCH_DISPLACEMENT & 0x03FFFFFCu);
   static_assert((HOOK_BRANCH_DISPLACEMENT & ~0x03FFFFFCu) == 0,
                 "landing pad displacement must fit in the B-form 24-bit field");
@@ -206,17 +212,17 @@ void RunPublicAdapterScenario()
 
   const PowerPC::GcnPort::ExecutionIdentity unauthenticated;
   EXPECT_FALSE(PowerPC::GcnPort::BootAuthenticatedImage(system, unauthenticated, program,
-                                                         PROGRAM_ADDRESS, PROGRAM_ADDRESS)
+                                                        PROGRAM_ADDRESS, PROGRAM_ADDRESS)
                    .ok);
 
   const auto booted = PowerPC::GcnPort::BootAuthenticatedImage(system, identity, program,
-                                                                 PROGRAM_ADDRESS, PROGRAM_ADDRESS);
+                                                               PROGRAM_ADDRESS, PROGRAM_ADDRESS);
   ASSERT_TRUE(booted.ok) << booted.detail;
 
   // The process may boot at most one image at a time; a second call must fail rather than
   // silently reinitializing state the first boot still owns.
-  EXPECT_FALSE(PowerPC::GcnPort::BootAuthenticatedImage(system, identity, program,
-                                                         PROGRAM_ADDRESS, PROGRAM_ADDRESS)
+  EXPECT_FALSE(PowerPC::GcnPort::BootAuthenticatedImage(system, identity, program, PROGRAM_ADDRESS,
+                                                        PROGRAM_ADDRESS)
                    .ok);
 
   {
@@ -227,8 +233,8 @@ void RunPublicAdapterScenario()
     const auto first = runtime.ExecuteJitBlock();
     EXPECT_EQ(first.kind, PowerPC::GcnPort::JitBlockKind::Compiled);
     EXPECT_EQ(first.guest_pc, PROGRAM_ADDRESS);
-    // Dolphin's analyzer may merge more than one pass of a tight two-instruction reflexive loop into
-    // a single compiled block; only a multiple of the 2-instruction body is guaranteed.
+    // Dolphin's analyzer may merge more than one pass of a tight two-instruction reflexive loop
+    // into a single compiled block; only a multiple of the 2-instruction body is guaranteed.
     EXPECT_GE(first.instruction_count, 2u);
     EXPECT_EQ(first.instruction_count % 2, 0u);
     EXPECT_GE(state.gpr[3], 1u);
@@ -238,8 +244,8 @@ void RunPublicAdapterScenario()
     EXPECT_EQ(after_first.fallback_events, 0u);
 
     // A second entry at the same address/feature flags is a cache hit, not a recompile: the block
-    // branches back to its own already-published start, so there is never a second, not-yet-compiled
-    // successor address for this shape.
+    // branches back to its own already-published start, so there is never a second,
+    // not-yet-compiled successor address for this shape.
     state.pc = PROGRAM_ADDRESS;
     state.npc = PROGRAM_ADDRESS;
     state.gpr[3] = 0;
@@ -254,8 +260,8 @@ void RunPublicAdapterScenario()
       {
         ++static_cast<CountingHook*>(context)->calls;
         // Redirect to a separate, unhooked branch-to-self landing pad. LR is never initialized in
-        // this minimal harness (ReturnToCaller would jump to it), and HOOK_ADDRESS's own body already
-        // falls through toward that same landing pad on the unhooked path.
+        // this minimal harness (ReturnToCaller would jump to it), and HOOK_ADDRESS's own body
+        // already falls through toward that same landing pad on the unhooked path.
         return PowerPC::GcnPort::HookResult::ContinueAt(PROGRAM_LANDING_PAD_ADDRESS);
       }
     };
@@ -344,18 +350,18 @@ void RunGameCubeOsInitScenario()
   EXPECT_EQ(ppc_state.spr[SPR_DBAT1L], 0x0000002au);
 
   // The registers are only half of what BS2 leaves behind. The SDK reads these low-memory globals
-  // back by fixed address, and derives OS_TIMER_CLOCK from the bus clock at 0x800000F8 -- so leaving
-  // that one zero does not fail loudly, it silently corrupts every tick and time conversion a title
-  // makes. CBoot::SetupGCMemory's own constants (Boot_BS2Emu.cpp) are the reference.
+  // back by fixed address, and derives OS_TIMER_CLOCK from the bus clock at 0x800000F8 -- so
+  // leaving that one zero does not fail loudly, it silently corrupts every tick and time conversion
+  // a title makes. CBoot::SetupGCMemory's own constants (Boot_BS2Emu.cpp) are the reference.
   auto& memory = system.GetMemory();
-  EXPECT_EQ(memory.Read_U32(0x80000020), 0x0D15EA5Eu);  // booted from bootrom
+  EXPECT_EQ(memory.Read_U32(0x80000020), 0x0D15EA5Eu);              // booted from bootrom
   EXPECT_EQ(memory.Read_U32(0x80000028), memory.GetRamSizeReal());  // physical memory size
-  EXPECT_EQ(memory.Read_U32(0x800000d0), 0x01000000u);  // ARAM size
-  EXPECT_EQ(memory.Read_U32(0x800000F8), 0x09a7ec80u);  // bus clock speed
-  EXPECT_EQ(memory.Read_U32(0x800000FC), 0x1cf7c580u);  // CPU clock speed
-  EXPECT_EQ(memory.Read_U32(0x80000300), 0x4c000064u);  // default DSI handler: rfi
-  EXPECT_EQ(memory.Read_U32(0x80000800), 0x4c000064u);  // default FPU handler: rfi
-  EXPECT_EQ(memory.Read_U32(0x80000C00), 0x4c000064u);  // default syscall handler: rfi
+  EXPECT_EQ(memory.Read_U32(0x800000d0), 0x01000000u);              // ARAM size
+  EXPECT_EQ(memory.Read_U32(0x800000F8), 0x09a7ec80u);              // bus clock speed
+  EXPECT_EQ(memory.Read_U32(0x800000FC), 0x1cf7c580u);              // CPU clock speed
+  EXPECT_EQ(memory.Read_U32(0x80000300), 0x4c000064u);              // default DSI handler: rfi
+  EXPECT_EQ(memory.Read_U32(0x80000800), 0x4c000064u);              // default FPU handler: rfi
+  EXPECT_EQ(memory.Read_U32(0x80000C00), 0x4c000064u);              // default syscall handler: rfi
 
   PowerPC::GcnPort::ShutdownBootedImage(system);
   File::DeleteDirRecursively(profile_path);
@@ -385,7 +391,7 @@ void RunGameCubeOsInitDefaultOffScenario()
 
   Core::System& system = Core::System::GetInstance();
   const auto booted = PowerPC::GcnPort::BootAuthenticatedImage(system, identity, program,
-                                                                 PROGRAM_ADDRESS, PROGRAM_ADDRESS);
+                                                               PROGRAM_ADDRESS, PROGRAM_ADDRESS);
   ASSERT_TRUE(booted.ok) << booted.detail;
 
   const auto& ppc_state = system.GetPPCState();
@@ -425,9 +431,11 @@ TEST(GcnPortRuntime, BootAuthenticatedImageDefaultsToNoGameCubeOsInit)
 //
 // The three assertions below are each an independent discriminator:
 //   * ticks must strictly increase per dispatch          -- fails if downcount is overwritten;
-//   * a block must hold more than one instruction        -- fails under MAIN_ENABLE_DEBUGGING, which
+//   * a block must hold more than one instruction        -- fails under MAIN_ENABLE_DEBUGGING,
+//   which
 //                                                           also bounds per block but drives the
-//                                                           analyzer into single-instruction blocks;
+//                                                           analyzer into single-instruction
+//                                                           blocks;
 //   * r3 must advance by exactly one block's worth        -- fails if a call runs zero or several
 //                                                           blocks.
 void RunBlockBoundaryAndCoreTimingScenario()
@@ -442,15 +450,15 @@ void RunBlockBoundaryAndCoreTimingScenario()
   constexpr u32 PROGRAM_ADDRESS = 0x80009000;
   // Three adds then an unconditional branch back to the first of them: a four-instruction loop in
   // which exactly three of every four instructions retired is an increment of r3. How many of those
-  // iterations the analyzer folds into one block is its own decision -- it follows the unconditional
-  // backward branch, and has been observed forming both a 4-instruction and a 12-instruction block
-  // for this body -- so the assertions below are written against that ratio rather than any fixed
-  // block size, which is not part of this API's contract.
+  // iterations the analyzer folds into one block is its own decision -- it follows the
+  // unconditional backward branch, and has been observed forming both a 4-instruction and a
+  // 12-instruction block for this body -- so the assertions below are written against that ratio
+  // rather than any fixed block size, which is not part of this API's contract.
   constexpr u32 BRANCH_BACK_THREE_INSTRUCTIONS = 0x4bfffff4;
   constexpr u32 ADDS_PER_ITERATION = 3;
   constexpr u32 INSTRUCTIONS_PER_ITERATION = 4;
-  const std::vector<u8> program = BigEndianImage(
-      {ADDI_R3_R3_1, ADDI_R3_R3_1, ADDI_R3_R3_1, BRANCH_BACK_THREE_INSTRUCTIONS});
+  const std::vector<u8> program =
+      BigEndianImage({ADDI_R3_R3_1, ADDI_R3_R3_1, ADDI_R3_R3_1, BRANCH_BACK_THREE_INSTRUCTIONS});
   const auto identity = MakeIdentity(5);
 
   Core::System& system = Core::System::GetInstance();
@@ -472,8 +480,8 @@ void RunBlockBoundaryAndCoreTimingScenario()
     const auto outcome = runtime.ExecuteJitBlock();
 
     // Blocks must stay block-sized. MAIN_ENABLE_DEBUGGING would also make the dispatcher exit once
-    // per block, but it additionally drives the analyzer into single-instruction blocks; this is the
-    // assertion that tells the two apart.
+    // per block, but it additionally drives the analyzer into single-instruction blocks; this is
+    // the assertion that tells the two apart.
     EXPECT_GT(outcome.instruction_count, 1u)
         << "dispatch " << dispatch << " ran a single-instruction block, not a real one";
 
@@ -503,9 +511,9 @@ TEST(GcnPortRuntime, ExecuteJitBlockAdvancesCoreTimingAndRunsExactlyOneBlock)
   cpu_thread.join();
 }
 
-// Dolphin's subsystems reach some of their owners through raw singletons they never check, so a boot
-// that leaves one absent does not fail -- it crashes later, in whichever subsystem touches it first.
-// Two of those are covered here.
+// Dolphin's subsystems reach some of their owners through raw singletons they never check, so a
+// boot that leaves one absent does not fail -- it crashes later, in whichever subsystem touches it
+// first. Two of those are covered here.
 //
 // The log manager is reached through a raw pointer by, among others,
 // FileMonitor::FileLogger::Log, which DVDThread::ProcessReadRequest calls on every disc FILE read:
@@ -570,16 +578,16 @@ TEST(GcnPortRuntime, BootOwnsTheSubsystemsDolphinDereferencesUnchecked)
   cpu_thread.join();
 }
 
-// ExecuteJitBlocks exists because one block per host call costs a host round trip per block: against
-// exact GMSE01 it measured ~180,000 blocks/second, i.e. ~740,000 guest instructions/second, far under
-// GameCube speed. A batch lifts gcnport's one-block slice cap so the dispatcher chains direct-linked
-// blocks natively.
+// ExecuteJitBlocks exists because one block per host call costs a host round trip per block:
+// against exact GMSE01 it measured ~180,000 blocks/second, i.e. ~740,000 guest instructions/second,
+// far under GameCube speed. A batch lifts gcnport's one-block slice cap so the dispatcher chains
+// direct-linked blocks natively.
 //
 // The contract this pins is that speed is bought without giving up measurability or correctness:
-// every block still reports itself through the JIT's own per-block callback, so the counters advance
-// by exactly the number of blocks the batch claims; a batch runs far more blocks per call than the
-// one-block path; and the one-block path still works afterwards, proving the lifted cap was restored
-// rather than leaked.
+// every block still reports itself through the JIT's own per-block callback, so the counters
+// advance by exactly the number of blocks the batch claims; a batch runs far more blocks per call
+// than the one-block path; and the one-block path still works afterwards, proving the lifted cap
+// was restored rather than leaked.
 void RunBatchedExecutionScenario()
 {
   const std::string profile_path = File::CreateTempDir();
@@ -591,8 +599,8 @@ void RunBatchedExecutionScenario()
 
   constexpr u32 PROGRAM_ADDRESS = 0x8000b000;
   constexpr u32 BRANCH_BACK_THREE_INSTRUCTIONS = 0x4bfffff4;
-  const std::vector<u8> program = BigEndianImage(
-      {ADDI_R3_R3_1, ADDI_R3_R3_1, ADDI_R3_R3_1, BRANCH_BACK_THREE_INSTRUCTIONS});
+  const std::vector<u8> program =
+      BigEndianImage({ADDI_R3_R3_1, ADDI_R3_R3_1, ADDI_R3_R3_1, BRANCH_BACK_THREE_INSTRUCTIONS});
   const auto identity = MakeIdentity(7);
 
   Core::System& system = Core::System::GetInstance();
@@ -666,7 +674,8 @@ void RunDiscRefusalScenario()
       PowerPC::GcnPort::GameCubeBootOptions{.apply_os_init = true,
                                             .disc_image_path = "/nonexistent.iso"});
   EXPECT_FALSE(no_hardware.ok);
-  EXPECT_NE(no_hardware.detail.find("apply_hardware_init"), std::string::npos) << no_hardware.detail;
+  EXPECT_NE(no_hardware.detail.find("apply_hardware_init"), std::string::npos)
+      << no_hardware.detail;
 
   // A path that is not a readable disc image is a failed boot, not a boot with no disc: the caller
   // named a disc and did not get one.
@@ -690,9 +699,8 @@ void RunDiscRefusalScenario()
 
   const auto no_os_init = PowerPC::GcnPort::BootAuthenticatedImage(
       system, identity, program, PROGRAM_ADDRESS, PROGRAM_ADDRESS,
-      PowerPC::GcnPort::GameCubeBootOptions{.apply_hardware_init = true,
-                                            .disc_image_path = missing,
-                                            .run_apploader = true});
+      PowerPC::GcnPort::GameCubeBootOptions{
+          .apply_hardware_init = true, .disc_image_path = missing, .run_apploader = true});
   EXPECT_FALSE(no_os_init.ok);
   EXPECT_NE(no_os_init.detail.find("apply_os_init"), std::string::npos) << no_os_init.detail;
 
@@ -706,9 +714,112 @@ void RunDiscRefusalScenario()
   File::DeleteDirRecursively(profile_path);
 }
 
+// Writes a minimal but genuine GameCube disc image: the 0x20-byte header a drive returns for
+// DVDReadDiscID, carrying the game ID, plus the big-endian region code in bi2.bin at 0x458 that
+// DiscIO::VolumeGC::GetRegion reads. No title data and no apploader, so it stays asset-free and
+// CI-safe while still being a real disc as far as DiscIO::CreateDisc is concerned.
+bool WriteSyntheticGameCubeDisc(const std::string& path, const char (&game_id)[7], u32 region_code)
+{
+  constexpr u32 GAMECUBE_DISC_MAGIC = 0xc2339f3d;
+  constexpr size_t REGION_CODE_OFFSET = 0x458;
+  constexpr size_t DISC_HEADER_BYTES = REGION_CODE_OFFSET + sizeof(u32);
+
+  std::vector<u8> image(DISC_HEADER_BYTES, 0);
+  std::memcpy(image.data(), game_id, 6);
+  const auto write_big_endian = [&image](size_t offset, u32 value) {
+    image[offset] = static_cast<u8>(value >> 24);
+    image[offset + 1] = static_cast<u8>(value >> 16);
+    image[offset + 2] = static_cast<u8>(value >> 8);
+    image[offset + 3] = static_cast<u8>(value);
+  };
+  write_big_endian(0x1c, GAMECUBE_DISC_MAGIC);
+  write_big_endian(REGION_CODE_OFFSET, region_code);
+
+  File::IOFile file(path, "wb");
+  return file.WriteBytes(image.data(), image.size());
+}
+
+// A disc does not just supply data to a booted console -- it decides what console to build. Two
+// things a frontend does before Core sees a title, and this adapter must do itself:
+//
+//   * the disc's region, which CBoot::SetupGCMemory publishes at 0x800000CC and EmulatedBS2_GC also
+//     reads for the IPL font encoding. SConfig leaves it Unknown, which DiscIO::IsNTSC reads as
+//     PAL. Measured with a US retail disc: the title built a PAL render mode (xfbHeight 530) while
+//     its own framebuffer allocation was the NTSC-sized 640x528x2, so its display copy ran past the
+//     end of that block and destroyed the live object the heap had placed immediately after it.
+//
+//   * Dolphin's shipped per-title settings in Sys/GameSettings, which carry the corrections whose
+//     absence breaks specific titles the same way.
+//
+// Both must be in place before the video backend and the rest of the hardware come up, because
+// Config::AddLayer's change notification reaches VideoCommon through CPUThreadConfigCallback, which
+// a frontend's CPU thread pumps and this adapter's caller-driven dispatch does not.
+void RunDiscConfiguresConsoleScenario()
+{
+  const std::string profile_path = File::CreateTempDir();
+  if (profile_path.empty())
+  {
+    ADD_FAILURE() << "failed to create an isolated Dolphin user directory";
+    return;
+  }
+
+  constexpr u32 PROGRAM_ADDRESS = 0x8000e000;
+  constexpr u32 GUEST_VIDEO_FORMAT = 0x800000cc;
+  constexpr u32 VIDEO_FORMAT_NTSC = 0;
+  constexpr u32 VIDEO_FORMAT_PAL = 1;
+  const std::vector<u8> program = BigEndianImage({BRANCH_TO_SELF});
+  Core::System& system = Core::System::GetInstance();
+
+  // Two discs that differ only in their country code, booted the same way. One disc alone could not
+  // tell "the region was taken from the disc" from "the region happened to already be right".
+  const std::string ntsc_path = profile_path + "/synthetic-ntsc.iso";
+  const std::string pal_path = profile_path + "/synthetic-pal.iso";
+  constexpr u32 REGION_CODE_NTSC_U = 1;
+  constexpr u32 REGION_CODE_PAL = 2;
+  ASSERT_TRUE(WriteSyntheticGameCubeDisc(ntsc_path, "GMSE01", REGION_CODE_NTSC_U));
+  ASSERT_TRUE(WriteSyntheticGameCubeDisc(pal_path, "GMSP01", REGION_CODE_PAL));
+
+  const auto ntsc = PowerPC::GcnPort::BootAuthenticatedImage(
+      system, MakeIdentity(10), program, PROGRAM_ADDRESS, PROGRAM_ADDRESS,
+      PowerPC::GcnPort::GameCubeBootOptions{
+          .apply_os_init = true, .apply_hardware_init = true, .disc_image_path = ntsc_path});
+  ASSERT_TRUE(ntsc.ok) << ntsc.detail;
+
+  EXPECT_EQ(SConfig::GetInstance().m_region, DiscIO::Region::NTSC_U);
+  EXPECT_EQ(system.GetMemory().Read_U32(GUEST_VIDEO_FORMAT), VIDEO_FORMAT_NTSC);
+
+  // The shipped per-title layer, asserted by its presence rather than by any one setting inside it,
+  // so this stays a test of the mechanism and not of whatever Dolphin currently ships for one ID.
+  EXPECT_NE(Config::GetLayer(Config::LayerType::GlobalGame), nullptr);
+  // The user's own per-title INI is deliberately never applied: an embedded boot must not depend on
+  // what the person running it last set in Dolphin.
+  EXPECT_EQ(Config::GetLayer(Config::LayerType::LocalGame), nullptr);
+
+  PowerPC::GcnPort::ShutdownBootedImage(system);
+  EXPECT_EQ(Config::GetLayer(Config::LayerType::GlobalGame), nullptr);
+
+  const auto pal = PowerPC::GcnPort::BootAuthenticatedImage(
+      system, MakeIdentity(11), program, PROGRAM_ADDRESS, PROGRAM_ADDRESS,
+      PowerPC::GcnPort::GameCubeBootOptions{
+          .apply_os_init = true, .apply_hardware_init = true, .disc_image_path = pal_path});
+  ASSERT_TRUE(pal.ok) << pal.detail;
+
+  EXPECT_EQ(SConfig::GetInstance().m_region, DiscIO::Region::PAL);
+  EXPECT_EQ(system.GetMemory().Read_U32(GUEST_VIDEO_FORMAT), VIDEO_FORMAT_PAL);
+
+  PowerPC::GcnPort::ShutdownBootedImage(system);
+  File::DeleteDirRecursively(profile_path);
+}
+
 TEST(GcnPortRuntime, DiscImageRefusalsNeverBootSilentlyWithoutTheDisc)
 {
   std::thread cpu_thread(RunDiscRefusalScenario);
+  cpu_thread.join();
+}
+
+TEST(GcnPortRuntime, DiscRegionAndShippedSettingsConfigureTheConsole)
+{
+  std::thread cpu_thread(RunDiscConfiguresConsoleScenario);
   cpu_thread.join();
 }
 
@@ -854,9 +965,9 @@ TEST(GcnPortRuntime, ClassifyFallbackReasonMatchesStaticOpcodeTables)
 }
 
 // Proves BootAuthenticatedImage's apply_hardware_init option actually builds a working
-// MMIO::Mapping handler table (HW::Init -> MemoryManager::InitMMIO), using a small synthetic program
-// that stores to, then reads back, the real GameCube ProcessorInterface hardware register at
-// physical/effective address 0x0C003004 (PI_INTERRUPT_MASK; see ProcessorInterface.cpp's
+// MMIO::Mapping handler table (HW::Init -> MemoryManager::InitMMIO), using a small synthetic
+// program that stores to, then reads back, the real GameCube ProcessorInterface hardware register
+// at physical/effective address 0x0C003004 (PI_INTERRUPT_MASK; see ProcessorInterface.cpp's
 // RegisterMMIO) -- the exact register and address a real GMSE01 boot's own __init_hardware code
 // faulted on before this flag existed (docs/dolphin-embedding-contract.md). Boots in real
 // addressing mode (apply_os_init left at its default false) so the effective address the
@@ -880,7 +991,7 @@ void RunHardwareInitMmioScenario()
   constexpr u32 LWZ_R5_0_R3 = 0x80A30000;                // lwz r5, 0(r3)
   const std::vector<u8> program =
       BigEndianImage({LIS_R3_PI_BASE, ADDI_R3_R3_PI_MASK_OFFSET, LIS_R4_TEST_VALUE_HI,
-                       ORI_R4_R4_TEST_VALUE_LO, STW_R4_0_R3, LWZ_R5_0_R3, BRANCH_TO_SELF});
+                      ORI_R4_R4_TEST_VALUE_LO, STW_R4_0_R3, LWZ_R5_0_R3, BRANCH_TO_SELF});
   const auto identity = MakeIdentity(5);
 
   Core::System& system = Core::System::GetInstance();
@@ -925,12 +1036,12 @@ void RunNoHardwareInitMmioFaultScenario()
   constexpr u32 STW_R4_0_R3 = 0x90830000;
   const std::vector<u8> program =
       BigEndianImage({LIS_R3_PI_BASE, ADDI_R3_R3_PI_MASK_OFFSET, LIS_R4_TEST_VALUE_HI,
-                       ORI_R4_R4_TEST_VALUE_LO, STW_R4_0_R3, BRANCH_TO_SELF});
+                      ORI_R4_R4_TEST_VALUE_LO, STW_R4_0_R3, BRANCH_TO_SELF});
   const auto identity = MakeIdentity(6);
 
   Core::System& system = Core::System::GetInstance();
   const auto booted = PowerPC::GcnPort::BootAuthenticatedImage(system, identity, program,
-                                                                PROGRAM_ADDRESS, PROGRAM_ADDRESS);
+                                                               PROGRAM_ADDRESS, PROGRAM_ADDRESS);
   ASSERT_TRUE(booted.ok) << booted.detail;
 
   PowerPC::GcnPort::RuntimeSession runtime(system, identity);
@@ -972,8 +1083,8 @@ void RunHeadlessMediaDevicesScenario()
 
   constexpr u32 PROGRAM_ADDRESS = 0x8000d000;
   constexpr u32 BRANCH_BACK_THREE_INSTRUCTIONS = 0x4bfffff4;
-  const std::vector<u8> program = BigEndianImage(
-      {ADDI_R3_R3_1, ADDI_R3_R3_1, ADDI_R3_R3_1, BRANCH_BACK_THREE_INSTRUCTIONS});
+  const std::vector<u8> program =
+      BigEndianImage({ADDI_R3_R3_1, ADDI_R3_R3_1, ADDI_R3_R3_1, BRANCH_BACK_THREE_INSTRUCTIONS});
   const auto identity = MakeIdentity(9);
 
   Core::System& system = Core::System::GetInstance();
