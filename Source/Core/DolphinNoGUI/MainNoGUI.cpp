@@ -6,6 +6,7 @@
 #include <OptionParser.h>
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -24,6 +25,7 @@
 #include "Core/Core.h"
 #include "Core/DolphinAnalytics.h"
 #include "Core/FifoPlayer/FifoDataFile.h"
+#include "Core/FifoPlayer/FifoPlayer.h"
 #include "Core/FifoPlayer/FifoRecorder.h"
 #include "Common/FileUtil.h"
 #include "Core/Host.h"
@@ -236,6 +238,22 @@ int main(const int argc, char* argv[])
       .type("int")
       .set_default("3")
       .help("Number of frames to record into the .dff [%default]");
+  // Sunbright: headless FIFO PLAYBACK with Dolphin's own object range. Replaying a
+  // recorded .dff draws the console's frame from the console's own command stream, and
+  // the range restricts it to a span of objects -- which is what makes a single retail
+  // draw comparable with a single draw of ours. Without it the only retail evidence
+  // available for one draw is the finished frame every other draw also contributed to.
+  parser->add_option("--fifo-play-objects")
+      .action("store")
+      .set_default("")
+      .help("Headless FIFO playback: draw only objects START:END of each replayed frame "
+            "(inclusive, Dolphin's own object numbering; empty = all objects)");
+  parser->add_option("--fifo-play-fields")
+      .action("store")
+      .type("int")
+      .set_default("-1")
+      .help("Headless FIFO playback: exit after this many VI fields, so a framedump "
+            "finalizes without the replay looping forever (-1 = off) [%default]");
   parser->add_option("--pad-start-at")
       .action("store")
       .type("int")
@@ -405,6 +423,69 @@ int main(const int argc, char* argv[])
   {
     fprintf(stderr, "Could not boot the specified file\n");
     return 1;
+  }
+
+  // Sunbright: configure headless FIFO playback. The object range is read by
+  // FifoPlayer::WriteFrame on every replayed frame, so setting it here covers each one;
+  // the field limit exists because a replay loops by design and a framedump is only
+  // written out when the process shuts down.
+  static Common::EventHook s_fifo_play_hook;
+  {
+    const std::string objects = static_cast<const char*>(options.get("fifo_play_objects"));
+    if (!objects.empty())
+    {
+      const std::size_t colon = objects.find(':');
+      if (colon == std::string::npos)
+      {
+        fprintf(stderr, "[sb-fifoplay] --fifo-play-objects wants START:END, got '%s'\n",
+                objects.c_str());
+        return 1;
+      }
+      const std::string start_text = objects.substr(0, colon);
+      const std::string end_text = objects.substr(colon + 1);
+      char* unparsed = nullptr;
+      const unsigned long start = std::strtoul(start_text.c_str(), &unparsed, 10);
+      if (unparsed == nullptr || *unparsed != '\0' || start_text.empty())
+      {
+        fprintf(stderr, "[sb-fifoplay] '%s' is not an object number\n", start_text.c_str());
+        return 1;
+      }
+      const unsigned long end = std::strtoul(end_text.c_str(), &unparsed, 10);
+      if (unparsed == nullptr || *unparsed != '\0' || end_text.empty())
+      {
+        fprintf(stderr, "[sb-fifoplay] '%s' is not an object number\n", end_text.c_str());
+        return 1;
+      }
+      if (end < start)
+      {
+        fprintf(stderr, "[sb-fifoplay] object range %lu:%lu ends before it starts\n", start, end);
+        return 1;
+      }
+      FifoPlayer& player = Core::System::GetInstance().GetFifoPlayer();
+      player.SetObjectRangeStart(static_cast<u32>(start));
+      player.SetObjectRangeEnd(static_cast<u32>(end));
+      fprintf(stderr, "[sb-fifoplay] drawing objects %lu:%lu of each replayed frame\n", start,
+              end);
+    }
+    const int play_fields = options.get("fifo_play_fields");
+    if (play_fields >= 0)
+    {
+      static int s_play_limit = play_fields;
+      static int s_play_field = 0;
+      static bool s_play_done = false;
+      auto& system = Core::System::GetInstance();
+      fprintf(stderr, "[sb-fifoplay] exiting after %d fields\n", s_play_limit);
+      s_fifo_play_hook = system.GetVideoEvents().vi_end_field_event.Register([] {
+        if (s_play_done)
+          return;
+        if (++s_play_field >= s_play_limit)
+        {
+          s_play_done = true;
+          fprintf(stderr, "[sb-fifoplay] reached field %d, shutting down\n", s_play_field);
+          s_platform->RequestShutdown();
+        }
+      });
+    }
   }
 
   // Sunbright: arm headless FIFO recording. On each VI field end (deterministic
