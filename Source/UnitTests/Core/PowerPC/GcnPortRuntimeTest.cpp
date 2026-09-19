@@ -13,10 +13,12 @@
 #include "Common/FileUtil.h"
 #include "Common/IOFile.h"
 #include "Common/Logging/LogManager.h"
+#include "Core/Config/MainSettings.h"
 #include "Core/ConfigManager.h"
 #include "Core/Core.h"
 #include "Core/CoreTiming.h"
 #include "Core/HW/CPU.h"
+#include "Core/HW/EXI/EXI_Device.h"
 #include "Core/HW/Memmap.h"
 #include "Core/PowerPC/GcnPortRuntime.h"
 #include "Core/PowerPC/Gekko.h"
@@ -724,6 +726,12 @@ void RunDiscRefusalScenario()
 // DVDReadDiscID, carrying the game ID, plus the big-endian region code in bi2.bin at 0x458 that
 // DiscIO::VolumeGC::GetRegion reads. No title data and no apploader, so it stays asset-free and
 // CI-safe while still being a real disc as far as DiscIO::CreateDisc is concerned.
+// The bi2.bin region codes the writer below stamps, in the order DiscIO::VolumeGC::GetRegion reads
+// them. They belong beside the writer rather than inside one scenario, because more than one boot
+// depends on which console a disc builds.
+constexpr u32 REGION_CODE_NTSC_U = 1;
+constexpr u32 REGION_CODE_PAL = 2;
+
 bool WriteSyntheticGameCubeDisc(const std::string& path, const char (&game_id)[7], u32 region_code)
 {
   constexpr u32 GAMECUBE_DISC_MAGIC = 0xc2339f3d;
@@ -780,8 +788,6 @@ void RunDiscConfiguresConsoleScenario()
   // tell "the region was taken from the disc" from "the region happened to already be right".
   const std::string ntsc_path = profile_path + "/synthetic-ntsc.iso";
   const std::string pal_path = profile_path + "/synthetic-pal.iso";
-  constexpr u32 REGION_CODE_NTSC_U = 1;
-  constexpr u32 REGION_CODE_PAL = 2;
   ASSERT_TRUE(WriteSyntheticGameCubeDisc(ntsc_path, "GMSE01", REGION_CODE_NTSC_U));
   ASSERT_TRUE(WriteSyntheticGameCubeDisc(pal_path, "GMSP01", REGION_CODE_PAL));
 
@@ -815,6 +821,91 @@ void RunDiscConfiguresConsoleScenario()
 
   PowerPC::GcnPort::ShutdownBootedImage(system);
   File::DeleteDirRecursively(profile_path);
+}
+
+// A memory card is storage policy, which the empty-slot default deliberately does not own. Three
+// things are worth proving without a game image: that naming one attaches a real card whose file
+// the device creates and formats, and that each way of naming one the boot cannot honour is
+// refused rather than booted with the slot silently still empty -- which a title reports much
+// later, in its own words, as there being no memory card inserted.
+void RunMemoryCardScenario()
+{
+  const std::string profile_path = File::CreateTempDir();
+  if (profile_path.empty())
+  {
+    ADD_FAILURE() << "failed to create an isolated Dolphin user directory";
+    return;
+  }
+  UICommon::SetUserDirectory(profile_path);
+
+  constexpr u32 PROGRAM_ADDRESS = 0x8000c000;
+  const std::vector<u8> program = BigEndianImage({BRANCH_TO_SELF});
+  const auto identity = MakeIdentity(8);
+  Core::System& system = Core::System::GetInstance();
+
+  const std::string card_directory = profile_path + "/cards";
+  File::CreateFullPath(card_directory + "/");
+  const std::string card_path = card_directory + "/gamecube.raw";
+  const std::string disc_path = profile_path + "/ntsc-u.gcm";
+  ASSERT_TRUE(WriteSyntheticGameCubeDisc(disc_path, "GMSE01", REGION_CODE_NTSC_U));
+
+  const auto no_hardware = PowerPC::GcnPort::BootAuthenticatedImage(
+      system, identity, program, PROGRAM_ADDRESS, PROGRAM_ADDRESS,
+      PowerPC::GcnPort::GameCubeBootOptions{.apply_os_init = true,
+                                            .disc_image_path = disc_path,
+                                            .memory_card_slot_a_path = card_path});
+  EXPECT_FALSE(no_hardware.ok);
+  EXPECT_NE(no_hardware.detail.find("apply_hardware_init"), std::string::npos)
+      << no_hardware.detail;
+
+  // Without a disc there is no region, and Dolphin names a card file by the region: a boot that
+  // attached one anyway would reach GetDirectoryForRegion's unreachable default.
+  const auto no_disc = PowerPC::GcnPort::BootAuthenticatedImage(
+      system, identity, program, PROGRAM_ADDRESS, PROGRAM_ADDRESS,
+      PowerPC::GcnPort::GameCubeBootOptions{.apply_os_init = true,
+                                            .apply_hardware_init = true,
+                                            .memory_card_slot_a_path = card_path});
+  EXPECT_FALSE(no_disc.ok);
+  EXPECT_NE(no_disc.detail.find("region"), std::string::npos) << no_disc.detail;
+
+  EXPECT_EQ(File::ScanDirectoryTree(card_directory, false).children.size(), 0u)
+      << "a refused boot created a card file for a slot it never attached";
+
+  const auto booted = PowerPC::GcnPort::BootAuthenticatedImage(
+      system, identity, program, PROGRAM_ADDRESS, PROGRAM_ADDRESS,
+      PowerPC::GcnPort::GameCubeBootOptions{.apply_os_init = true,
+                                            .apply_hardware_init = true,
+                                            .disc_image_path = disc_path,
+                                            .memory_card_slot_a_path = card_path});
+  ASSERT_TRUE(booted.ok) << booted.detail;
+  EXPECT_EQ(Config::Get(Config::MAIN_SLOT_A), ExpansionInterface::EXIDeviceType::MemoryCard);
+  // The negative that makes the positive mean something: slot B was named by nobody, so it must
+  // still be the empty slot the default forces rather than a second card attached along with it.
+  EXPECT_EQ(Config::Get(Config::MAIN_SLOT_B), ExpansionInterface::EXIDeviceType::None);
+
+  PowerPC::GcnPort::ShutdownBootedImage(system);
+
+  // The device writes its card back on the way out, so exactly one card now exists in the
+  // directory the caller named, carrying a formatted card rather than an empty placeholder. Its
+  // exact filename is Dolphin's to choose -- GetMemcardPath appends the region and the card's free
+  // block count -- so this asserts what the caller can actually rely on: one file, of a real
+  // card's size, where the caller asked for it.
+  const File::FSTEntry cards = File::ScanDirectoryTree(card_directory, false);
+  ASSERT_EQ(cards.children.size(), 1u);
+  // The smallest card the GameCube has is 4 Mbit, which is 512 KiB on disk; anything shorter is a
+  // placeholder rather than a card.
+  constexpr u64 SMALLEST_GAMECUBE_CARD_BYTES = 512 * 1024;
+  EXPECT_GE(cards.children.front().size, SMALLEST_GAMECUBE_CARD_BYTES);
+  EXPECT_TRUE(cards.children.front().virtualName.starts_with("gamecube."))
+      << cards.children.front().virtualName;
+
+  File::DeleteDirRecursively(profile_path);
+}
+
+TEST(GcnPortRuntime, MemoryCardAttachesOnlyWhenTheConsumerNamesOne)
+{
+  std::thread cpu_thread(RunMemoryCardScenario);
+  cpu_thread.join();
 }
 
 TEST(GcnPortRuntime, DiscImageRefusalsNeverBootSilentlyWithoutTheDisc)

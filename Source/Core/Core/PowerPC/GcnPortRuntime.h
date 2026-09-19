@@ -266,6 +266,20 @@ struct GameCubeBootOptions
   // owners; asking for a disc without it is refused rather than silently ignored.
   std::string disc_image_path;
 
+  // Filesystem path to a raw GameCube memory card image, attached to EXI slot A so a title's own
+  // CARD library finds a card inserted instead of an empty slot. Empty attaches nothing, which is
+  // the default and is itself an ordinary hardware state rather than an error -- but it is the
+  // state a title notices: GMSE01 answers it with "There is no Memory Card in Slot A." and cannot
+  // reach a save file, so a consumer that needs one past that screen supplies a path here.
+  //
+  // Only this consumer-supplied path crosses the boundary: gcnport chooses no save location and
+  // ships no card, and Dolphin's own maintained `MemoryCard` device owns the file -- creating and
+  // formatting it when it does not yet exist, exactly as it does for its own users, and flushing
+  // the title's writes back to it. Requires apply_hardware_init, because ExpansionInterface is
+  // among HW::Init's device owners; asking for a card without it is refused rather than silently
+  // ignored.
+  std::string memory_card_slot_a_path;
+
   // `apply_media_init` brings up the two periodic media devices Dolphin's own `EmuThread`
   // initializes around `HW::Init`: the video backend (pinned to Dolphin's maintained headless Null
   // backend) and the DSP emulator, followed by `Fifo::Prepare`.

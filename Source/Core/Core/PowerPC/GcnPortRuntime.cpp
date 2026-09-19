@@ -175,6 +175,18 @@ void ForceNoHostBackedGameCubeDevices()
   Config::SetCurrent(Config::MAIN_SLOT_B, ExpansionInterface::EXIDeviceType::None);
   Config::SetCurrent(Config::MAIN_AUDIO_BACKEND, std::string(BACKEND_NULLSOUND));
 }
+
+// Puts a consumer-supplied raw memory card in EXI slot A, in place of the empty slot forced above.
+// This is the storage policy the function above deliberately does not own: the caller names the
+// file, and Dolphin's own maintained MemoryCard device creates, formats, reads and flushes it.
+// Config::GetMemcardPath rewrites a configured filename to carry the booted region's code, so the
+// path a title's saves land in is derived from the same SConfig region the rest of the boot uses
+// rather than from a second, independently guessed one.
+void AttachRawMemoryCardToSlotA(const std::string& path)
+{
+  Config::SetCurrent(Config::MAIN_SLOT_A, ExpansionInterface::EXIDeviceType::MemoryCard);
+  Config::SetCurrent(Config::MAIN_MEMCARD_A_PATH, path);
+}
 }  // namespace
 
 const char* ToString(JitRefusalReason reason) noexcept
@@ -384,6 +396,24 @@ BootResult BootAuthenticatedImage(Core::System& system, const ExecutionIdentity&
             .detail = "a disc image requires apply_hardware_init, which owns DVDInterface"};
   }
 
+  if (!options.memory_card_slot_a_path.empty() && !options.apply_hardware_init)
+  {
+    return {.ok = false,
+            .detail =
+                "a memory card requires apply_hardware_init, which owns ExpansionInterface"};
+  }
+
+  // Dolphin names a card file by the console's region (Config::GetMemcardPath rewrites the
+  // configured filename to carry it), and the only thing that establishes a region here is the
+  // booted disc -- SConfig leaves it Unknown otherwise, which GetDirectoryForRegion reaches as its
+  // unreachable default and asserts on. Refuse rather than attach a card whose file the device
+  // cannot name.
+  if (!options.memory_card_slot_a_path.empty() && options.disc_image_path.empty())
+  {
+    return {.ok = false,
+            .detail = "a memory card requires a disc, whose region names the card file"};
+  }
+
   Core::DeclareAsCPUThread();
   Config::Init();
   Config::AddLayer(std::make_unique<EmptyBaseConfigLoader>());
@@ -468,6 +498,8 @@ BootResult BootAuthenticatedImage(Core::System& system, const ExecutionIdentity&
   if (options.apply_hardware_init)
   {
     ForceNoHostBackedGameCubeDevices();
+    if (!options.memory_card_slot_a_path.empty())
+      AttachRawMemoryCardToSlotA(options.memory_card_slot_a_path);
     AudioCommon::InitSoundStream(system);
 
     // SerialInterfaceManager's periodic poll calls g_controller_interface.UpdateInput()
