@@ -41,6 +41,30 @@ static std::unique_ptr<DiscIO::FileInfo> GetFileInfo(const DiscIO::Volume& disc_
   return filesystem->FindFileInfo(path);
 }
 
+// The system files a whole-partition extract writes beside the filesystem, addressable one at a
+// time. They are not in the FST, so --single could not name them, and the only way to obtain one was
+// to extract the entire partition: 1.4 GB of files to reach a 4 MB main.dol. The names and the
+// layout are ExportSystemData's, so a single extraction lands where the full one would have put it.
+using SystemDataExporter = bool (*)(const DiscIO::Volume&, const DiscIO::Partition&,
+                                    const std::string&);
+
+static SystemDataExporter SystemDataExporterFor(const std::string& path)
+{
+  static constexpr std::pair<const char*, SystemDataExporter> EXPORTERS[] = {
+      {"sys/boot.bin", &DiscIO::ExportHeader},
+      {"sys/bi2.bin", &DiscIO::ExportBI2Data},
+      {"sys/apploader.img", &DiscIO::ExportApploader},
+      {"sys/main.dol", &DiscIO::ExportDOL},
+      {"sys/fst.bin", &DiscIO::ExportFST},
+  };
+  for (const auto& [name, exporter] : EXPORTERS)
+  {
+    if (path == name)
+      return exporter;
+  }
+  return nullptr;
+}
+
 static bool VolumeSupported(const DiscIO::Volume& disc_volume)
 {
   switch (disc_volume.GetVolumeType())
@@ -185,6 +209,13 @@ static bool HandleExtractPartition(const std::string& output, const std::string&
   {
     ExtractPartition(disc_volume, partition, file, quiet);
     return true;
+  }
+
+  if (const SystemDataExporter exporter = SystemDataExporterFor(single_file_path))
+  {
+    file.append(single_file_path);
+    File::CreateFullPath(file);
+    return exporter(disc_volume, partition, file);
   }
 
   const auto file_info = GetFileInfo(disc_volume, partition, single_file_path);
@@ -361,7 +392,10 @@ int Extract(const std::vector<std::string>& args)
   if (!extracted_one)
   {
     if (options.is_set("single"))
-      fmt::print(std::cerr, "Error: No file/folder was extracted.");
+      fmt::print(std::cerr,
+                 "Error: No file/folder was extracted. --single names a path in the disc's "
+                 "filesystem, or one of sys/boot.bin, sys/bi2.bin, sys/apploader.img, "
+                 "sys/main.dol, sys/fst.bin.");
     else
       fmt::print(std::cerr, "Error: No partitions were extracted.");
     if (options.is_set("partition"))
